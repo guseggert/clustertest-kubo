@@ -27,11 +27,12 @@ func init() {
 	logger = l.Sugar()
 }
 
-// TestKubo launches a cluster of 4 kubo nodes and verifies that they can all connect to each other.
+// TestKuboVersions launches a cluster of 4 kubo nodes of different versions, and verifies that they can all connect to each other.
 func TestKuboVersions(t *testing.T) {
 	ctx := context.Background()
 	clusterImpl, err := local.NewCluster()
 	// clusterImpl, err := docker.NewCluster("ubuntu")
+	// clusterImpl, err := aws.NewCluster()
 	require.NoError(t, err)
 
 	bc, err := cluster.New(clusterImpl, cluster.WithLogger(logger))

@@ -19,14 +19,14 @@ var (
 	versions    versionMap
 )
 
-// Fetcher fetches a Kubo archive and providers a reader for the binary data.
+// Fetcher fetches a Kubo binary and provides a reader for the binary data.
 type Fetcher interface {
-	// Fetch fetches a Kubo archive. If this returns no error, then the caller should close the reader to prevent leaks.
+	// Fetch fetches a Kubo binary. If this returns no error, then the caller should close the reader to prevent leaks.
 	Fetch(context.Context) (io.ReadCloser, error)
 }
 
-// RemoteFetcher fetches the given Kubo version archive, optionally caching it on the local disk.
-// This is useful when running tests locally using a released Kubo version, so you don't need to download it for every test run.
+// RemoteFetcher fetches the given Kubo version binary from dist.ipfs.io, optionally caching it on the local disk.
+// Caching is useful to avoid downloading the binary for every test run.
 type RemoteFetcher struct {
 	CacheLocally bool
 	Version      string
@@ -46,7 +46,7 @@ func (r *RemoteFetcher) Fetch(ctx context.Context) (io.ReadCloser, error) {
 }
 
 // GetVersions fetches and caches version metadata from dist.ipfs.io about all Kubo release versions.
-// Subsequent calls use the cached metadata.
+// Subsequent calls use the in-memory cached metadata.
 func GetVersions(ctx context.Context) (versionMap, error) {
 	versionsMut.Lock()
 	defer versionsMut.Unlock()

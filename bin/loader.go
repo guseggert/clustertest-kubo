@@ -44,7 +44,7 @@ func (b *SendingLoader) Load(ctx context.Context, destFile string) error {
 }
 
 // FetchingLoader loads a Kubo archive by having each node download the specified version from dist.ipfs.io.
-// For remote clusters, This is much faster than sending the archive to each one from the test runner.
+// For remote clusters, this is much faster than sending the archive to each one from the test runner.
 type FetchingLoader struct {
 	Version string
 	Fetcher cluster.Fetcher
