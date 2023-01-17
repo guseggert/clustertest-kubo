@@ -3,13 +3,14 @@ module github.com/guseggert/clustertest-kubo
 go 1.19
 
 require (
-	github.com/guseggert/clustertest v0.0.0-20230115112925-83a526df73ba
+	github.com/guseggert/clustertest v0.0.0-20230117011232-d140b757ba3e
 	github.com/ipfs/go-ipfs-api v0.3.1-0.20230115111907-7f63cbcb569f
 	github.com/ipfs/go-ipfs-http-client v0.4.1-0.20230115111817-c94830dff571
 	github.com/ipfs/kubo v0.17.0
 	github.com/libp2p/go-libp2p v0.24.2
 	github.com/multiformats/go-multiaddr v0.8.0
 	github.com/stretchr/testify v1.8.1
+	go.uber.org/multierr v1.8.0
 	go.uber.org/zap v1.24.0
 	golang.org/x/sync v0.1.0
 )
@@ -90,7 +91,6 @@ require (
 	go.opentelemetry.io/otel v1.7.0 // indirect
 	go.opentelemetry.io/otel/trace v1.7.0 // indirect
 	go.uber.org/atomic v1.10.0 // indirect
-	go.uber.org/multierr v1.8.0 // indirect
 	golang.org/x/crypto v0.3.0 // indirect
 	golang.org/x/mod v0.7.0 // indirect
 	golang.org/x/net v0.3.0 // indirect

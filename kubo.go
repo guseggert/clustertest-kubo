@@ -9,9 +9,9 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
-	"sync"
 	"time"
 
+	"github.com/guseggert/clustertest-kubo/bin"
 	"github.com/guseggert/clustertest/cluster"
 	"github.com/guseggert/clustertest/cluster/docker"
 	"github.com/guseggert/clustertest/cluster/local"
@@ -22,6 +22,8 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 )
+
+const defaultKuboVersion = "v0.17.0"
 
 type Cluster struct{ *cluster.BasicCluster }
 
@@ -41,15 +43,29 @@ func (c *Cluster) NewNodes(ctx context.Context, n int, opts ...NodeOption) ([]*N
 	return kuboNodes, nil
 }
 
+// NewNodesWithOpts creates len(opts) nodes with per-node options.
+func (c *Cluster) NewNodesWithOpts(ctx context.Context, opts [][]NodeOption) ([]*Node, error) {
+	var kuboNodes []*Node
+	nodes, err := c.BasicCluster.NewNodes(ctx, len(opts))
+	if err != nil {
+		return nil, err
+	}
+	for i, n := range nodes {
+		kn, err := NewNode(ctx, n, opts[i]...)
+		if err != nil {
+			return nil, err
+		}
+		kuboNodes = append(kuboNodes, kn)
+	}
+	return kuboNodes, nil
+}
+
 type Node struct {
 	*cluster.BasicNode
 
 	Log        *zap.SugaredLogger
 	HTTPClient *http.Client
-	Version    string
-
-	versionsMut sync.Mutex
-	versions    VersionMap
+	BinLoader  bin.Loader
 
 	// cached data
 	apiAddr       multiaddr.Multiaddr
@@ -68,9 +84,40 @@ func WithNodeLogger(l *zap.SugaredLogger) NodeOption {
 	}
 }
 
+// WithLocalKuboBin configures the node to use a Kubo binary on the local filesystem.
+func WithLocalKuboBin(binPath string) NodeOption {
+	return func(kn *Node) {
+		kn.BinLoader = &bin.SendingLoader{
+			Node: kn.BasicNode,
+			Fetcher: &bin.LocalFetcher{
+				BinPath: binPath,
+			},
+		}
+	}
+}
+
+// WithKuboVersion configures the node to use a specific version of Kubo from dist.ipfs.io.
 func WithKuboVersion(version string) NodeOption {
 	return func(kn *Node) {
-		kn.Version = version
+		_, isLocalNode := kn.Node.(*local.Node)
+		_, isDockerNode := kn.Node.(*docker.Node)
+		cacheLocally := isLocalNode || isDockerNode
+
+		if fetcher, ok := kn.Node.(cluster.Fetcher); ok && !cacheLocally {
+			kn.BinLoader = &bin.FetchingLoader{
+				Version: version,
+				Fetcher: fetcher,
+			}
+		} else {
+			kn.BinLoader = &bin.SendingLoader{
+				Node: kn.BasicNode,
+				Fetcher: &bin.RemoteFetcher{
+					CacheLocally: cacheLocally,
+					Version:      version,
+				},
+			}
+		}
+
 	}
 }
 
@@ -96,74 +143,19 @@ func NewNode(ctx context.Context, node *cluster.BasicNode, opts ...NodeOption) (
 		WithNodeLogger(l.Sugar())(kn)
 	}
 
-	if kn.Version == "" {
-		WithKuboVersion("v0.17.0")(kn)
+	if kn.BinLoader == nil {
+		WithKuboVersion(defaultKuboVersion)(kn)
 	}
 
 	return kn, nil
 }
 
-func (n *Node) getOrFetchVersions(ctx context.Context) (VersionMap, error) {
-	n.versionsMut.Lock()
-	defer n.versionsMut.Unlock()
-	if n.versions == nil {
-		versionMap, err := FetchVersions(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("fetching versions: %w", err)
-		}
-		n.versions = versionMap
-	}
-	return n.versions, nil
+func (n *Node) IPFSBin() string {
+	return filepath.Join(n.RootDir(), "ipfs")
 }
 
 func (n *Node) LoadBinary(ctx context.Context) error {
-	versions, err := n.getOrFetchVersions(ctx)
-	if err != nil {
-		return fmt.Errorf("fetching versions: %w", err)
-	}
-	var rc io.ReadCloser
-	_, isLocalNode := n.Node.(*local.Node)
-	_, isDockerNode := n.Node.(*docker.Node)
-	if isLocalNode || isDockerNode {
-		// if we're running locally, use local disk cache
-		rc, err = versions.FetchArchiveWithCaching(ctx, n.Version)
-		if err != nil {
-			return err
-		}
-		defer rc.Close()
-		err = n.SendFile(ctx, filepath.Join(n.RootDir(), "kubo.tar.gz"), rc)
-		if err != nil {
-			return err
-		}
-
-	} else if fetcher, ok := n.Node.(cluster.Fetcher); ok {
-		vi, ok := versions[n.Version]
-		if !ok {
-			return fmt.Errorf("no such version %q", n.Version)
-		}
-		err = fetcher.Fetch(ctx, vi.URL, filepath.Join(n.RootDir(), "kubo.tar.gz"))
-		if err != nil {
-			return err
-		}
-	} else {
-		rc, err = versions.FetchArchive(ctx, n.Version)
-		if err != nil {
-			return err
-		}
-	}
-
-	code, err := n.Run(ctx, cluster.StartProcRequest{
-		Command: "tar",
-		Args:    []string{"xzf", "kubo.tar.gz"},
-		WD:      n.RootDir(),
-	})
-	if err != nil {
-		return err
-	}
-	if code != 0 {
-		return fmt.Errorf("non-zero exit code %d when unarchiving", code)
-	}
-	return nil
+	return n.BinLoader.Load(ctx, n.IPFSBin())
 }
 
 func (n *Node) RunDaemon(ctx context.Context) error {
@@ -171,7 +163,7 @@ func (n *Node) RunDaemon(ctx context.Context) error {
 	stdout := &bytes.Buffer{}
 	proc, err := n.StartProc(ctx, cluster.StartProcRequest{
 		Env:     []string{"IPFS_PATH=" + n.IPFSPath()},
-		Command: filepath.Join(n.RootDir(), "kubo", "ipfs"),
+		Command: n.IPFSBin(),
 		Args:    []string{"daemon"},
 		Stdout:  stdout,
 		Stderr:  stderr,
@@ -293,8 +285,7 @@ func (n *Node) APIAddr(ctx context.Context) (multiaddr.Multiaddr, error) {
 
 func (n *Node) RunKubo(ctx context.Context, req cluster.StartProcRequest) error {
 	req.Env = append(req.Env, "IPFS_PATH="+n.IPFSPath())
-
-	req.Command = filepath.Join(n.RootDir(), "kubo", "ipfs")
+	req.Command = n.IPFSBin()
 
 	code, err := n.Run(ctx, req)
 	if err != nil {

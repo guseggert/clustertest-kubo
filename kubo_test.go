@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	_ "net/http/pprof"
 
@@ -32,27 +31,32 @@ func init() {
 func TestKuboVersions(t *testing.T) {
 	ctx := context.Background()
 	clusterImpl, err := local.NewCluster()
+	// clusterImpl, err := docker.NewCluster("ubuntu")
 	require.NoError(t, err)
 
 	bc, err := cluster.New(clusterImpl, cluster.WithLogger(logger))
 	require.NoError(t, err)
 
-	c := Cluster{BasicCluster: bc}
+	c := &Cluster{BasicCluster: bc}
 
 	defer c.Cleanup(ctx)
 
-	versions := []string{"v0.15.0", "v0.16.0", "v0.17.0", "v0.18.0-rc1"}
+	versions := [][]NodeOption{
+		{WithKuboVersion("v0.15.0")},
+		{WithKuboVersion("v0.16.0")},
+		{WithKuboVersion("v0.17.0")},
+		{WithKuboVersion("v0.18.0-rc1")},
+	}
 
-	nodes, err := c.NewNodes(ctx, len(versions))
+	nodes, err := c.NewNodesWithOpts(ctx, versions)
 	require.NoError(t, err)
 
 	// For each version, load the Kubo binary, initialize the repo, and run the daemon.
 	group, groupCtx := errgroup.WithContext(ctx)
 	daemonCtx, daemonCancel := context.WithCancel(ctx)
 	daemonGroup, daemonGroupCtx := errgroup.WithContext(daemonCtx)
-	for i, version := range versions {
-		node := nodes[i]
-		node.Version = version
+	for _, node := range nodes {
+		node := node
 		group.Go(func() error {
 			err := node.LoadBinary(groupCtx)
 			if err != nil {
@@ -132,8 +136,6 @@ func TestKuboVersions(t *testing.T) {
 			require.NoError(t, err)
 
 			// TODO poll, don't sleep
-			time.Sleep(1 * time.Second)
-
 			ensureConnected(from, to)
 		}
 	}
