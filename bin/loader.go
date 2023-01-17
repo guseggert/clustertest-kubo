@@ -48,7 +48,7 @@ func (b *SendingLoader) Load(ctx context.Context, destFile string) error {
 type FetchingLoader struct {
 	Version string
 	Fetcher cluster.Fetcher
-	Node    cluster.Node
+	Node    *cluster.BasicNode
 }
 
 func (c *FetchingLoader) Load(ctx context.Context, destFile string) error {
@@ -69,7 +69,7 @@ func (c *FetchingLoader) Load(ctx context.Context, destFile string) error {
 		return fmt.Errorf("fetching %q: %w", url, err)
 	}
 
-	proc, err := c.Node.StartProc(ctx, cluster.StartProcRequest{
+	code, err := c.Node.Run(ctx, cluster.StartProcRequest{
 		Command: "tar",
 		Args:    []string{"xzf", archivePath},
 		WD:      dir,
@@ -77,26 +77,18 @@ func (c *FetchingLoader) Load(ctx context.Context, destFile string) error {
 	if err != nil {
 		return fmt.Errorf("unarchiving: %w", err)
 	}
-	code, err := proc.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for unarchive process to exit: %w", err)
-	}
 	if code != 0 {
 		return fmt.Errorf("non-zero exit code %d for unarchive process", code)
 	}
-	proc, err = c.Node.StartProc(ctx, cluster.StartProcRequest{
-		Command: "rm",
-		Args:    []string{archivePath},
+	code, err = c.Node.Run(ctx, cluster.StartProcRequest{
+		Command: "mv",
+		Args:    []string{filepath.Join(dir, "kubo", "ipfs"), destFile},
 	})
 	if err != nil {
-		return fmt.Errorf("removing archive: %w", err)
-	}
-	code, err = proc.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("waiting for archive removal process to exit: %w", err)
+		return fmt.Errorf("moving kubo bin: %w", err)
 	}
 	if code != 0 {
-		return fmt.Errorf("non-zero exit code %d when removing archive", code)
+		return fmt.Errorf("non-zero exit code %d when moving kubo bin", code)
 	}
 
 	return nil

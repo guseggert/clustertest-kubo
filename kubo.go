@@ -107,6 +107,7 @@ func WithKuboVersion(version string) NodeOption {
 			kn.BinLoader = &bin.FetchingLoader{
 				Version: version,
 				Fetcher: fetcher,
+				Node:    kn.BasicNode,
 			}
 		} else {
 			kn.BinLoader = &bin.SendingLoader{
