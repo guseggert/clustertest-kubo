@@ -16,7 +16,7 @@ import (
 
 var (
 	versionsMut sync.Mutex
-	versions    versionMap
+	versions    VersionMap
 )
 
 // Fetcher fetches a Kubo binary and provides a reader for the binary data.
@@ -47,7 +47,7 @@ func (r *RemoteFetcher) Fetch(ctx context.Context) (io.ReadCloser, error) {
 
 // GetVersions fetches and caches version metadata from dist.ipfs.io about all Kubo release versions.
 // Subsequent calls use the in-memory cached metadata.
-func GetVersions(ctx context.Context) (versionMap, error) {
+func GetVersions(ctx context.Context) (VersionMap, error) {
 	versionsMut.Lock()
 	defer versionsMut.Unlock()
 	if versions != nil {
@@ -55,7 +55,7 @@ func GetVersions(ctx context.Context) (versionMap, error) {
 	}
 
 	var m sync.Mutex
-	vmap := versionMap{}
+	vmap := VersionMap{}
 
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(6)

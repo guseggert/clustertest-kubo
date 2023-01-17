@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-type versionMap map[string]VersionInfo
+type VersionMap map[string]VersionInfo
 
 type VersionInfo struct {
 	URL string
@@ -30,7 +30,7 @@ type archJSON struct {
 	SHA512 string
 }
 
-func (v versionMap) FetchVersionWithCaching(ctx context.Context, version string) (io.ReadCloser, error) {
+func (v VersionMap) FetchVersionWithCaching(ctx context.Context, version string) (io.ReadCloser, error) {
 	vi, ok := v[version]
 	if !ok {
 		return nil, fmt.Errorf("no such version %q", version)
@@ -69,7 +69,7 @@ func (v versionMap) FetchVersionWithCaching(ctx context.Context, version string)
 	return f, err
 }
 
-func (v versionMap) FetchVersion(ctx context.Context, version string) (io.ReadCloser, error) {
+func (v VersionMap) FetchVersion(ctx context.Context, version string) (io.ReadCloser, error) {
 	vi, ok := v[version]
 	if !ok {
 		return nil, fmt.Errorf("no such version %q", version)
@@ -85,7 +85,7 @@ func (v versionMap) FetchVersion(ctx context.Context, version string) (io.ReadCl
 	return ExtractKuboBinary(resp.Body), nil
 }
 
-func (v versionMap) URL(version string) (string, error) {
+func (v VersionMap) URL(version string) (string, error) {
 	vi, ok := v[version]
 	if !ok {
 		return "", fmt.Errorf("no such version %q", version)
