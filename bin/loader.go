@@ -30,15 +30,15 @@ func (b *SendingLoader) Load(ctx context.Context, destFile string) error {
 	if err != nil {
 		return fmt.Errorf("sending file: %w", err)
 	}
-	code, err := b.Node.Run(ctx, cluster.StartProcRequest{
+	res, err := b.Node.Run(ctx, cluster.StartProcRequest{
 		Command: "chmod",
 		Args:    []string{"+x", destFile},
 	})
 	if err != nil {
 		return fmt.Errorf("setting mode: %w", err)
 	}
-	if code != 0 {
-		return fmt.Errorf("non-zero exit code %d setting mode", code)
+	if res.ExitCode != 0 {
+		return fmt.Errorf("non-zero exit code %d setting mode", res.ExitCode)
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func (c *FetchingLoader) Load(ctx context.Context, destFile string) error {
 		return fmt.Errorf("fetching %q: %w", url, err)
 	}
 
-	code, err := c.Node.Run(ctx, cluster.StartProcRequest{
+	res, err := c.Node.Run(ctx, cluster.StartProcRequest{
 		Command: "tar",
 		Args:    []string{"xzf", archivePath},
 		WD:      dir,
@@ -77,18 +77,18 @@ func (c *FetchingLoader) Load(ctx context.Context, destFile string) error {
 	if err != nil {
 		return fmt.Errorf("unarchiving: %w", err)
 	}
-	if code != 0 {
-		return fmt.Errorf("non-zero exit code %d for unarchive process", code)
+	if res.ExitCode != 0 {
+		return fmt.Errorf("non-zero exit code %d for unarchive process", res.ExitCode)
 	}
-	code, err = c.Node.Run(ctx, cluster.StartProcRequest{
+	res, err = c.Node.Run(ctx, cluster.StartProcRequest{
 		Command: "mv",
 		Args:    []string{filepath.Join(dir, "kubo", "ipfs"), destFile},
 	})
 	if err != nil {
 		return fmt.Errorf("moving kubo bin: %w", err)
 	}
-	if code != 0 {
-		return fmt.Errorf("non-zero exit code %d when moving kubo bin", code)
+	if res.ExitCode != 0 {
+		return fmt.Errorf("non-zero exit code %d when moving kubo bin", res.ExitCode)
 	}
 
 	return nil

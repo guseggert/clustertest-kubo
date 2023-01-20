@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// example invocation: ./latency --region eu-north-1 --versions v0.17.0,v0.16.0,v0.15.0 --nodes-per-version 5 --settle 10s --urls /ipns/filecoin.io,/ipns/ipfs.io --times 5
 func main() {
 	app := &cli.App{
 		Name:  "latency",
@@ -77,13 +78,7 @@ func main() {
 			ctx := cliCtx.Context
 
 			// clusterImpl, err := docker.NewCluster("ubuntu")
-			clusterImpl, err := aws.NewCluster(aws.Options{
-				SessionOptions: &session.Options{
-					Config: awssdk.Config{
-						Region: &region,
-					},
-				},
-			})
+			clusterImpl, err := aws.NewClusterWithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region})))
 			if err != nil {
 				return fmt.Errorf("creating AWS cluster: %w", err)
 			}
@@ -154,7 +149,7 @@ func main() {
 
 			var m sync.Mutex
 			// map from node to url to list of latencies in attempt order
-			results := map[int]map[string][]int{}
+			results := map[int]map[string][]int64{}
 
 			group, groupCtx = errgroup.WithContext(ctx)
 			for i, node := range nodes {
@@ -171,8 +166,7 @@ func main() {
 						reqURL := fmt.Sprintf("http://localhost:%s%s", gatewayURL.Port(), u)
 						for i := 0; i < times; i++ {
 							curlCtx, cancelCurl := context.WithTimeout(groupCtx, 5*time.Minute)
-							now := time.Now()
-							code, err := node.Run(curlCtx, cluster.StartProcRequest{
+							res, err := node.Run(curlCtx, cluster.StartProcRequest{
 								Command: "curl",
 								Args:    []string{reqURL},
 							})
@@ -181,21 +175,21 @@ func main() {
 								cancelCurl()
 								continue
 							}
-							if code != 0 {
-								fmt.Printf("node %d non-zero exit code %d\n", nodeNum, code)
+							if res.ExitCode != 0 {
+								fmt.Printf("node %d non-zero exit code %d\n", nodeNum, res.ExitCode)
 								cancelCurl()
 								continue
 							}
 							cancelCurl()
 
-							latency := time.Since(now)
-							fmt.Printf("node: %d\turl:%s\treq: %d\tversion: %s\tlatency (ms): %d\n", nodeNum, reqURL, i, version, latency.Milliseconds())
+							timeMS := res.TimeMS
+							fmt.Printf("node: %d\turl:%s\treq: %d\tversion: %s\tlatency (ms): %d\n", nodeNum, reqURL, i, version, timeMS)
 
 							m.Lock()
 							if results[nodeNum] == nil {
-								results[nodeNum] = map[string][]int{}
+								results[nodeNum] = map[string][]int64{}
 							}
-							results[nodeNum][u] = append(results[nodeNum][u], int(latency.Milliseconds()))
+							results[nodeNum][u] = append(results[nodeNum][u], timeMS)
 							m.Unlock()
 
 							gcCtx, cancelGC := context.WithTimeout(groupCtx, 10*time.Second)

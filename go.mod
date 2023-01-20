@@ -4,7 +4,7 @@ go 1.19
 
 require (
 	github.com/aws/aws-sdk-go v1.36.30
-	github.com/guseggert/clustertest v0.0.0-20230117011232-d140b757ba3e
+	github.com/guseggert/clustertest v0.0.0-20230120214134-932ce66811a1
 	github.com/ipfs/go-ipfs-api v0.3.1-0.20230115111907-7f63cbcb569f
 	github.com/ipfs/go-ipfs-http-client v0.4.1-0.20230115111817-c94830dff571
 	github.com/ipfs/kubo v0.17.0

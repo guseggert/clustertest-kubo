@@ -174,14 +174,14 @@ func (n *Node) RunDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	code, err := proc.Wait(ctx)
+	res, err := proc.Wait(ctx)
 	if err != nil {
 		return err
 	}
 
-	if code != 0 {
-		n.Log.Debugf("non-zero daemon exit code %d\nstdout:\n%s\nstderr:\n%s\n", code, stdout, stderr)
-		return fmt.Errorf("non-zero daemon exit code %d", code)
+	if res.ExitCode != 0 {
+		n.Log.Debugf("non-zero daemon exit code %d\nstdout:\n%s\nstderr:\n%s\n", res.ExitCode, stdout, stderr)
+		return fmt.Errorf("non-zero daemon exit code %d", res.ExitCode)
 	}
 
 	n.stdout = stdout
@@ -287,12 +287,12 @@ func (n *Node) RunKubo(ctx context.Context, req cluster.StartProcRequest) error 
 	req.Env = append(req.Env, "IPFS_PATH="+n.IPFSPath())
 	req.Command = n.IPFSBin()
 
-	code, err := n.Run(ctx, req)
+	res, err := n.Run(ctx, req)
 	if err != nil {
 		return err
 	}
-	if code != 0 {
-		return fmt.Errorf("kubo had non-zero exit code %d", code)
+	if res.ExitCode != 0 {
+		return fmt.Errorf("kubo had non-zero exit code %d", res.ExitCode)
 	}
 	return nil
 }
