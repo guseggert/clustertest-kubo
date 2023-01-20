@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/guseggert/clustertest-kubo/bin"
@@ -228,12 +230,9 @@ func (n *Node) ConfigureForLocal(ctx context.Context) error {
 
 func (n *Node) ConfigureForRemote(ctx context.Context) error {
 	return n.UpdateConfig(ctx, func(cfg *config.Config) {
-		cfg.Bootstrap = nil
 		cfg.Addresses.Swarm = []string{"/ip4/0.0.0.0/tcp/0"}
 		cfg.Addresses.API = []string{"/ip4/127.0.0.1/tcp/0"}
 		cfg.Addresses.Gateway = []string{"/ip4/127.0.0.1/tcp/0"}
-		cfg.Swarm.DisableNatPortMap = true
-		cfg.Discovery.MDNS.Enabled = false
 	})
 }
 
@@ -368,7 +367,31 @@ func (n *Node) AddrInfo(ctx context.Context) (*peer.AddrInfo, error) {
 		ID:    peerID,
 		Addrs: multiaddrs,
 	}, nil
+}
 
+func (n *Node) RemoteAddrInfo(ctx context.Context) (*peer.AddrInfo, error) {
+	addrInfo, err := n.AddrInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = RemoveLocalAddrs(addrInfo)
+	if err != nil {
+		return nil, err
+	}
+	return addrInfo, nil
+}
+
+func (n *Node) GatewayURL(ctx context.Context) (*url.URL, error) {
+	rc, err := n.ReadFile(ctx, filepath.Join(n.IPFSPath(), "gateway"))
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+	return url.Parse(strings.TrimSpace(string(b)))
 }
 
 func (n *Node) WaitOnAPI(ctx context.Context) error {
