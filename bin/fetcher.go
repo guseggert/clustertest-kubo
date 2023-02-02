@@ -1,110 +1,75 @@
 package bin
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
-	"strings"
 	"sync"
-
-	"golang.org/x/sync/errgroup"
 )
 
 var (
 	versionsMut sync.Mutex
-	versions    VersionMap
+	versions    *Versions
 )
 
 // Fetcher fetches a Kubo binary and provides a reader for the binary data.
 type Fetcher interface {
 	// Fetch fetches a Kubo binary. If this returns no error, then the caller should close the reader to prevent leaks.
 	Fetch(context.Context) (io.ReadCloser, error)
+	Version(context.Context) (string, error)
 }
 
-// RemoteFetcher fetches the given Kubo version binary from dist.ipfs.io, optionally caching it on the local disk.
+// DistFetcher fetches the given Kubo version binary from dist.ipfs.io, optionally caching it on the local disk.
 // Caching is useful to avoid downloading the binary for every test run.
-type RemoteFetcher struct {
+type DistFetcher struct {
 	CacheLocally bool
-	Version      string
+	Vers         string
 }
 
-func (r *RemoteFetcher) Fetch(ctx context.Context) (io.ReadCloser, error) {
-	vm, err := GetVersions(ctx)
+func (r *DistFetcher) Fetch(ctx context.Context) (io.ReadCloser, error) {
+	vm, err := LoadVersions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching versions: %w", err)
 	}
 
 	if r.CacheLocally {
-		return vm.FetchVersionWithCaching(ctx, r.Version)
+		return vm.FetchVersionWithCaching(ctx, r.Vers)
 	}
 
-	return vm.FetchVersion(ctx, r.Version)
+	return vm.FetchVersion(ctx, r.Vers)
 }
 
-// GetVersions fetches and caches version metadata from dist.ipfs.io about all Kubo release versions.
-// Subsequent calls use the in-memory cached metadata.
-func GetVersions(ctx context.Context) (VersionMap, error) {
-	versionsMut.Lock()
-	defer versionsMut.Unlock()
-	if versions != nil {
-		return versions, nil
-	}
-
-	var m sync.Mutex
-	vmap := VersionMap{}
-
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(6)
-
-	group.Go(func() error {
-		req, err := http.NewRequestWithContext(groupCtx, http.MethodGet, "https://dist.ipfs.tech/kubo/versions", nil)
-		if err != nil {
-			return err
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			version := strings.TrimSpace(scanner.Text())
-			group.Go(func() error {
-				url := fmt.Sprintf("https://dist.ipfs.tech/kubo/%s/dist.json", version)
-				req, err := http.NewRequest(http.MethodGet, url, nil)
-				resp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					return err
-				}
-				var v versionJSON
-				err = json.NewDecoder(resp.Body).Decode(&v)
-				resp.Body.Close()
-				if err != nil {
-					return err
-				}
-				arch := v.Platforms["linux"].Archs["amd64"]
-				m.Lock()
-				vmap[version] = VersionInfo{
-					URL: fmt.Sprintf("https://dist.ipfs.tech/kubo/%s%s", version, arch.Link),
-					CID: arch.CID,
-				}
-				m.Unlock()
-				return nil
-			})
-		}
-		return nil
-	})
-	err := group.Wait()
+func (r *DistFetcher) Version(ctx context.Context) (string, error) {
+	vm, err := LoadVersions(ctx)
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("fetching versions: %w", err)
 	}
-	versions = vmap
+	vi, err := vm.get(r.Vers)
+	if err != nil {
+		return "", err
+	}
+	return vi.Version, nil
+}
 
-	return versions, nil
+// DockerImageFetcher fetches a Kubo binary by extracting it from a Docker image.
+type DockerImageFetcher struct {
+	Image string
+}
+
+func (r *DockerImageFetcher) Fetch(ctx context.Context) (io.ReadCloser, error) {
+	return nil, nil
+}
+
+// RemoteFetcher fetches a Kubo binary from one of multiple remote sources.
+// The source used depends on the version passed, which can be of the following schemes:
+//
+// - dist:<semver>        the binary is loaded from dist.ipfs.io according to the semver, such as v0.18.0 or v0.18.0-rc1
+// - dist:latest          the latest semver will be loaded from dist.ipfs.io (including RCs)
+// - dist:latest-release  the latest release will be loaded from dist.ipfs.io
+// - docker:latest        the binary is loaded from the latest Docker image
+// - docker:<commit hash> the binary is loaded from the first Docker image that matches the hash
+type RemoteFetcher struct {
 }
 
 // LocalFetcher fetches a Kubo archive from a local file.
@@ -115,4 +80,8 @@ type LocalFetcher struct {
 
 func (l *LocalFetcher) Fetch(ctx context.Context) (io.ReadCloser, error) {
 	return os.Open(l.BinPath)
+}
+
+func (l *LocalFetcher) Version(_ context.Context) (string, error) {
+	return "local", nil
 }

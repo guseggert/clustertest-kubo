@@ -3,16 +3,23 @@ package bin
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha512"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 
 	"go.uber.org/multierr"
 )
 
+var errChecksum = errors.New("checksum did not match")
+
 // archiveBinaryExtractor extracts a Kubo binary from a gzipped tar archive from dist.ipfs.io.
 type archiveBinaryExtractor struct {
 	r io.Reader
+	h hash.Hash
+
+	checksum []byte
 
 	gzipReader *gzip.Reader
 	tarReader  *tar.Reader
@@ -47,7 +54,17 @@ func (e *archiveBinaryExtractor) Read(b []byte) (n int, err error) {
 			}
 		}
 	}
-	return e.tarReader.Read(b)
+
+	n, err = e.tarReader.Read(b)
+	if errors.Is(err, io.EOF) {
+		// check the digest to make sure the checksum matched
+		digest := e.h.Sum(nil)
+		if string(digest) != string(e.checksum) {
+			fmt.Printf("%q != %q\n", string(digest), string(e.checksum))
+			return n, errChecksum
+		}
+	}
+	return n, err
 }
 
 func (e *archiveBinaryExtractor) Close() error {
@@ -59,7 +76,14 @@ func (e *archiveBinaryExtractor) Close() error {
 	return merr
 }
 
-// ExtractKuboBinary extracts the kubo binary from a dist archive.
-func ExtractKuboBinary(r io.Reader) io.ReadCloser {
-	return &archiveBinaryExtractor{r: r}
+// ExtractKuboBinary extracts the kubo binary from a dist archive,
+// also checking the given archive checksum in the process.
+func ExtractKuboBinary(r io.Reader, checksum []byte) io.ReadCloser {
+	h := sha512.New()
+	teeReader := io.TeeReader(r, h)
+	return &archiveBinaryExtractor{
+		r:        teeReader,
+		h:        h,
+		checksum: checksum,
+	}
 }

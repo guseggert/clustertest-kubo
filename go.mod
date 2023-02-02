@@ -3,8 +3,9 @@ module github.com/guseggert/clustertest-kubo
 go 1.19
 
 require (
+	github.com/Masterminds/semver/v3 v3.2.0
 	github.com/aws/aws-sdk-go v1.36.30
-	github.com/guseggert/clustertest v0.0.0-20230120214134-932ce66811a1
+	github.com/guseggert/clustertest v0.0.0-20230202214239-a6539fc7cb65
 	github.com/ipfs/go-ipfs-api v0.3.1-0.20230115111907-7f63cbcb569f
 	github.com/ipfs/go-ipfs-http-client v0.4.1-0.20230115111817-c94830dff571
 	github.com/ipfs/kubo v0.17.0
@@ -108,5 +109,3 @@ require (
 	lukechampine.com/blake3 v1.1.7 // indirect
 	nhooyr.io/websocket v1.8.7 // indirect
 )
-
-replace github.com/guseggert/clustertest => ../clustertest
