@@ -11,10 +11,13 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/guseggert/clustertest-kubo/bin"
 	"github.com/guseggert/clustertest/cluster"
+	clusteriface "github.com/guseggert/clustertest/cluster"
+	"github.com/guseggert/clustertest/cluster/basic"
 	"github.com/guseggert/clustertest/cluster/docker"
 	"github.com/guseggert/clustertest/cluster/local"
 	shell "github.com/ipfs/go-ipfs-api"
@@ -25,46 +28,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const defaultKuboVersion = "v0.17.0"
-
-type Cluster struct{ *cluster.BasicCluster }
-
-func (c *Cluster) NewNodes(ctx context.Context, n int, opts ...NodeOption) ([]*Node, error) {
-	var kuboNodes []*Node
-	nodes, err := c.BasicCluster.NewNodes(ctx, n)
-	if err != nil {
-		return nil, err
-	}
-	for _, n := range nodes {
-		kn, err := NewNode(ctx, n, opts...)
-		if err != nil {
-			return nil, err
-		}
-		kuboNodes = append(kuboNodes, kn)
-	}
-	return kuboNodes, nil
-}
-
-// NewNodesWithOpts creates len(opts) nodes with per-node options.
-func (c *Cluster) NewNodesWithOpts(ctx context.Context, opts [][]NodeOption) ([]*Node, error) {
-	var kuboNodes []*Node
-	nodes, err := c.BasicCluster.NewNodes(ctx, len(opts))
-	if err != nil {
-		return nil, err
-	}
-	for i, n := range nodes {
-		kn, err := NewNode(ctx, n, opts[i]...)
-		if err != nil {
-			return nil, err
-		}
-		kuboNodes = append(kuboNodes, kn)
-	}
-	return kuboNodes, nil
-}
-
 type Node struct {
-	*cluster.BasicNode
+	*basic.Node
 
+	Ctx        context.Context
 	Log        *zap.SugaredLogger
 	HTTPClient *http.Client
 	BinLoader  bin.Loader
@@ -73,143 +40,168 @@ type Node struct {
 	apiAddr       multiaddr.Multiaddr
 	rpcAPIClient  *shell.Shell
 	rcpHTTPClient *httpapi.HttpApi
-
-	stdout *bytes.Buffer
-	stderr *bytes.Buffer
 }
 
-type NodeOption func(*Node)
-
-func WithNodeLogger(l *zap.SugaredLogger) NodeOption {
-	return func(kn *Node) {
-		kn.Log = l.Named("kubo_node")
-	}
+func (n *Node) WithNodeLogger(l *zap.SugaredLogger) *Node {
+	n.Log = l.Named("kubo_node")
+	return n
 }
 
 // WithLocalKuboBin configures the node to use a Kubo binary on the local filesystem.
-func WithLocalKuboBin(binPath string) NodeOption {
-	return func(kn *Node) {
-		kn.BinLoader = &bin.SendingLoader{
-			Node: kn.BasicNode,
-			Fetcher: &bin.LocalFetcher{
-				BinPath: binPath,
-			},
-		}
+func (n *Node) WithLocalKuboBin(binPath string) *Node {
+	n.BinLoader = &bin.SendingLoader{
+		Node: n.Node.Node,
+		Fetcher: &bin.LocalFetcher{
+			BinPath: binPath,
+		},
 	}
+	return n
+}
+
+func (n *Node) Context(ctx context.Context) *Node {
+	newN := *n
+	newN.Ctx = ctx
+	newN.Node = newN.Node.Context(ctx)
+	return &newN
 }
 
 // WithKuboVersion configures the node to use a specific version of Kubo from dist.ipfs.io.
-func WithKuboVersion(version string) NodeOption {
-	return func(kn *Node) {
-		_, isLocalNode := kn.Node.(*local.Node)
-		_, isDockerNode := kn.Node.(*docker.Node)
-		cacheLocally := isLocalNode || isDockerNode
+func (n *Node) WithKuboVersion(version string) *Node {
+	nodeImpl := n.Node.Node
+	_, isLocalNode := nodeImpl.(*local.Node)
+	_, isDockerNode := nodeImpl.(*docker.Node)
+	cacheLocally := isLocalNode || isDockerNode
 
-		if fetcher, ok := kn.Node.(cluster.Fetcher); ok && !cacheLocally {
-			kn.BinLoader = &bin.FetchingLoader{
-				Version: version,
-				Fetcher: fetcher,
-				Node:    kn.BasicNode,
-			}
-		} else {
-			kn.BinLoader = &bin.SendingLoader{
-				Node: kn.BasicNode,
-				Fetcher: &bin.RemoteFetcher{
-					CacheLocally: cacheLocally,
-					Version:      version,
-				},
-			}
+	if fetcher, ok := nodeImpl.(clusteriface.Fetcher); ok && !cacheLocally {
+		n.BinLoader = &bin.FetchingLoader{
+			Vers:    version,
+			Fetcher: fetcher,
+			Node:    nodeImpl,
 		}
-
+	} else {
+		n.BinLoader = &bin.SendingLoader{
+			Node: nodeImpl,
+			Fetcher: &bin.DistFetcher{
+				CacheLocally: cacheLocally,
+				Vers:         version,
+			},
+		}
 	}
+	return n
 }
 
-func NewNode(ctx context.Context, node *cluster.BasicNode, opts ...NodeOption) (*Node, error) {
+func newNode(basicNode *basic.Node) *Node {
 	newTransport := http.DefaultTransport.(*http.Transport).Clone()
-	newTransport.DialContext = node.Dial
+	newTransport.DialContext = basicNode.Node.Dial
 	httpClient := http.Client{Transport: newTransport}
 
 	kn := &Node{
-		BasicNode:  node,
+		Node:       basicNode,
 		HTTPClient: &httpClient,
+		Ctx:        context.Background(),
 	}
 
-	for _, o := range opts {
-		o(kn)
-	}
-
-	if kn.Log == nil {
-		l, err := zap.NewProduction()
-		if err != nil {
-			return nil, err
-		}
-		WithNodeLogger(l.Sugar())(kn)
-	}
-
-	if kn.BinLoader == nil {
-		WithKuboVersion(defaultKuboVersion)(kn)
-	}
-
-	return kn, nil
+	return kn.WithNodeLogger(defaultLogger).WithKuboVersion(defaultKuboVersion)
 }
 
 func (n *Node) IPFSBin() string {
 	return filepath.Join(n.RootDir(), "ipfs")
 }
 
-func (n *Node) LoadBinary(ctx context.Context) error {
-	return n.BinLoader.Load(ctx, n.IPFSBin())
+func (n *Node) LoadBinary() error {
+	return n.BinLoader.Load(n.Ctx, n.IPFSBin())
 }
 
-func (n *Node) RunDaemon(ctx context.Context) error {
+func (n *Node) Version() (string, error) {
+	return n.BinLoader.Version(n.Ctx)
+}
+
+func (n *Node) MustVersion() string {
+	return Must2(n.Version())
+}
+
+type Daemon struct {
+	Proc   *basic.Process
+	Stdout *bytes.Buffer
+	Stderr *bytes.Buffer
+}
+
+func (d *Daemon) Stop() error {
+	err := d.Proc.Signal(syscall.SIGKILL)
+	if err != nil {
+		return fmt.Errorf("signaling daemon: %w", err)
+	}
+	_, err = d.Proc.Wait()
+	return err
+}
+
+type StopFunc func()
+
+func (n *Node) StartDaemon() (*Daemon, error) {
 	stderr := &bytes.Buffer{}
 	stdout := &bytes.Buffer{}
-	proc, err := n.StartProc(ctx, cluster.StartProcRequest{
+	proc, err := n.StartProc(cluster.StartProcRequest{
 		Env:     []string{"IPFS_PATH=" + n.IPFSPath()},
 		Command: n.IPFSBin(),
 		Args:    []string{"daemon"},
 		Stdout:  stdout,
 		Stderr:  stderr,
 	})
+
 	if err != nil {
-		return err
-	}
-	res, err := proc.Wait(ctx)
-	if err != nil {
-		return err
+		return nil, fmt.Errorf("starting daemon process: %w", err)
 	}
 
-	if res.ExitCode != 0 {
-		n.Log.Debugf("non-zero daemon exit code %d\nstdout:\n%s\nstderr:\n%s\n", res.ExitCode, stdout, stderr)
-		return fmt.Errorf("non-zero daemon exit code %d", res.ExitCode)
-	}
-
-	n.stdout = stdout
-	n.stderr = stderr
-
-	return nil
+	return &Daemon{
+		Proc:   proc,
+		Stdout: stdout,
+		Stderr: stderr,
+	}, nil
 }
 
-func (n *Node) Init(ctx context.Context) error {
-	err := n.RunKubo(ctx, cluster.StartProcRequest{
-		Args: []string{"init"},
-	})
+func (n *Node) StartDaemonAndWaitForAPI() (*Daemon, error) {
+	daemon, err := n.StartDaemon()
 	if err != nil {
+		return nil, err
+	}
+	err = n.WaitOnAPI()
+	if err != nil {
+		stopErr := daemon.Stop()
+		if stopErr != nil {
+			n.Log.Warnf("stopping daemon after wait error: %s", stopErr)
+		}
+		n.Log.Debugf("stdout: %s\n", daemon.Stdout)
+		n.Log.Debugf("stderr: %s\n", daemon.Stderr)
+		return nil, err
+	}
+	return daemon, nil
+}
+
+func (n *Node) Init() error {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	err := ProcMust(n.RunKubo(cluster.StartProcRequest{
+		Args:   []string{"init"},
+		Stdout: stdout,
+		Stderr: stderr,
+	}))
+	if err != nil {
+		fmt.Printf("stdout: %s\n", stdout)
+		fmt.Printf("stderr: %s\n", stderr)
 		return fmt.Errorf("initializing Kubo: %w", err)
 	}
 
 	return nil
 }
 
-func (n *Node) SetConfig(ctx context.Context, cfg map[string]string) error {
+func (n *Node) SetConfig(cfg map[string]string) error {
 	// note that this must be serialized since the CLI barfs if it can't acquire the repo lock
 	for k, v := range cfg {
 		var stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
-		err := n.RunKubo(ctx, cluster.StartProcRequest{
+		err := ProcMust(n.RunKubo(cluster.StartProcRequest{
 			Args:   []string{"config", "--json", k, v},
 			Stdout: stdout,
 			Stderr: stderr,
-		})
+		}))
 		if err != nil {
 			return fmt.Errorf("setting config %q when initializing: %w", k, err)
 		}
@@ -217,8 +209,8 @@ func (n *Node) SetConfig(ctx context.Context, cfg map[string]string) error {
 	return nil
 }
 
-func (n *Node) ConfigureForLocal(ctx context.Context) error {
-	return n.UpdateConfig(ctx, func(cfg *config.Config) {
+func (n *Node) ConfigureForLocal() error {
+	return n.UpdateConfig(func(cfg *config.Config) {
 		cfg.Bootstrap = nil
 		cfg.Addresses.Swarm = []string{"/ip4/127.0.0.1/tcp/0"}
 		cfg.Addresses.API = []string{"/ip4/127.0.0.1/tcp/0"}
@@ -228,11 +220,11 @@ func (n *Node) ConfigureForLocal(ctx context.Context) error {
 	})
 }
 
-func (n *Node) ConfigureForRemote(ctx context.Context) error {
-	return n.UpdateConfig(ctx, func(cfg *config.Config) {
-		cfg.Addresses.Swarm = []string{"/ip4/0.0.0.0/tcp/0"}
-		cfg.Addresses.API = []string{"/ip4/127.0.0.1/tcp/0"}
-		cfg.Addresses.Gateway = []string{"/ip4/127.0.0.1/tcp/0"}
+func (n *Node) ConfigureForRemote() error {
+	return n.UpdateConfig(func(cfg *config.Config) {
+		cfg.Addresses.Swarm = []string{"/ip4/0.0.0.0/tcp/4001"}
+		cfg.Addresses.API = []string{"/ip4/127.0.0.1/tcp/5001"}
+		cfg.Addresses.Gateway = []string{"/ip4/127.0.0.1/tcp/8081"}
 	})
 }
 
@@ -262,11 +254,11 @@ func (n *Node) IPFSPath() string {
 	return filepath.Join(n.RootDir(), ".ipfs")
 }
 
-func (n *Node) APIAddr(ctx context.Context) (multiaddr.Multiaddr, error) {
+func (n *Node) APIAddr() (multiaddr.Multiaddr, error) {
 	if n.apiAddr != nil {
 		return n.apiAddr, nil
 	}
-	rc, err := n.ReadFile(ctx, filepath.Join(n.IPFSPath(), "api"))
+	rc, err := n.ReadFile(filepath.Join(n.IPFSPath(), "api"))
 	if err != nil {
 		return nil, fmt.Errorf("opening api file: %w", err)
 	}
@@ -283,27 +275,36 @@ func (n *Node) APIAddr(ctx context.Context) (multiaddr.Multiaddr, error) {
 	return ma, nil
 }
 
-func (n *Node) RunKubo(ctx context.Context, req cluster.StartProcRequest) error {
+func (n *Node) StartKubo(req cluster.StartProcRequest) (*basic.Process, error) {
 	req.Env = append(req.Env, "IPFS_PATH="+n.IPFSPath())
 	req.Command = n.IPFSBin()
 
-	res, err := n.Run(ctx, req)
+	return n.StartProc(req)
+}
+
+func (n *Node) RunKubo(req cluster.StartProcRequest) (*cluster.ProcessResult, error) {
+	req.Env = append(req.Env, "IPFS_PATH="+n.IPFSPath())
+	req.Command = n.IPFSBin()
+	return n.Run(req)
+}
+
+func ProcMust(res *cluster.ProcessResult, err error) error {
 	if err != nil {
 		return err
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("kubo had non-zero exit code %d", res.ExitCode)
+		return fmt.Errorf("non-zero exit code %d", res.ExitCode)
 	}
 	return nil
 }
 
 // RPCHTTPClient returns an HTTP RPC client configured for this node (https://github.com/ipfs/go-ipfs-http-client)
 // We call this the "HTTP Client" to distinguish it from the "API Client". Both are very similar, but slightly different.
-func (n *Node) RPCHTTPClient(ctx context.Context) (*httpapi.HttpApi, error) {
+func (n *Node) RPCHTTPClient() (*httpapi.HttpApi, error) {
 	if n.rcpHTTPClient != nil {
 		return n.rcpHTTPClient, nil
 	}
-	apiMA, err := n.APIAddr(ctx)
+	apiMA, err := n.APIAddr()
 	if err != nil {
 		return nil, fmt.Errorf("getting API address: %w", err)
 	}
@@ -317,11 +318,11 @@ func (n *Node) RPCHTTPClient(ctx context.Context) (*httpapi.HttpApi, error) {
 
 // RPCClient returns an RPC client configured for this node (https://github.com/ipfs/go-ipfs-api)
 // We call this the "API Client" to distinguish it from the "HTTP Client". Both are very similar, but slightly different.
-func (n *Node) RPCAPIClient(ctx context.Context) (*shell.Shell, error) {
+func (n *Node) RPCAPIClient() (*shell.Shell, error) {
 	if n.rpcAPIClient != nil {
 		return n.rpcAPIClient, nil
 	}
-	apiMA, err := n.APIAddr(ctx)
+	apiMA, err := n.APIAddr()
 	if err != nil {
 		return nil, fmt.Errorf("getting API address: %w", err)
 	}
@@ -342,8 +343,8 @@ func (n *Node) RPCAPIClient(ctx context.Context) (*shell.Shell, error) {
 	return c, nil
 }
 
-func (n *Node) AddrInfo(ctx context.Context) (*peer.AddrInfo, error) {
-	sh, err := n.RPCAPIClient(ctx)
+func (n *Node) AddrInfo() (*peer.AddrInfo, error) {
+	sh, err := n.RPCAPIClient()
 	if err != nil {
 		return nil, fmt.Errorf("building API client: %w", err)
 	}
@@ -369,8 +370,8 @@ func (n *Node) AddrInfo(ctx context.Context) (*peer.AddrInfo, error) {
 	}, nil
 }
 
-func (n *Node) RemoteAddrInfo(ctx context.Context) (*peer.AddrInfo, error) {
-	addrInfo, err := n.AddrInfo(ctx)
+func (n *Node) RemoteAddrInfo() (*peer.AddrInfo, error) {
+	addrInfo, err := n.AddrInfo()
 	if err != nil {
 		return nil, err
 	}
@@ -381,8 +382,8 @@ func (n *Node) RemoteAddrInfo(ctx context.Context) (*peer.AddrInfo, error) {
 	return addrInfo, nil
 }
 
-func (n *Node) GatewayURL(ctx context.Context) (*url.URL, error) {
-	rc, err := n.ReadFile(ctx, filepath.Join(n.IPFSPath(), "gateway"))
+func (n *Node) GatewayURL() (*url.URL, error) {
+	rc, err := n.ReadFile(filepath.Join(n.IPFSPath(), "gateway"))
 	if err != nil {
 		return nil, err
 	}
@@ -394,21 +395,21 @@ func (n *Node) GatewayURL(ctx context.Context) (*url.URL, error) {
 	return url.Parse(strings.TrimSpace(string(b)))
 }
 
-func (n *Node) WaitOnAPI(ctx context.Context) error {
+func (n *Node) WaitOnAPI() error {
 	n.Log.Debug("waiting on API")
 	for i := 0; i < 500; i++ {
-		if n.checkAPI(ctx) {
+		if n.checkAPI() {
 			n.Log.Debugf("daemon API found")
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	n.Log.Debug("node failed to come online: \n%s\n\n%s", n.stderr, n.stdout)
+	n.Log.Debug("node %s failed to come online", n)
 	return errors.New("timed out waiting on API")
 }
 
-func (n *Node) checkAPI(ctx context.Context) bool {
-	apiAddr, err := n.APIAddr(ctx)
+func (n *Node) checkAPI() bool {
+	apiAddr, err := n.APIAddr()
 	if err != nil {
 		n.Log.Debugf("API addr not available yet: %s", err.Error())
 		return false
@@ -455,8 +456,8 @@ func (n *Node) checkAPI(ctx context.Context) bool {
 	return true
 }
 
-func (n *Node) ReadConfig(ctx context.Context) (*config.Config, error) {
-	rc, err := n.ReadFile(ctx, filepath.Join(n.IPFSPath(), "config"))
+func (n *Node) ReadConfig() (*config.Config, error) {
+	rc, err := n.ReadFile(filepath.Join(n.IPFSPath(), "config"))
 	if err != nil {
 		return nil, err
 	}
@@ -466,25 +467,25 @@ func (n *Node) ReadConfig(ctx context.Context) (*config.Config, error) {
 	return &cfg, err
 }
 
-func (n *Node) WriteConfig(ctx context.Context, c *config.Config) error {
+func (n *Node) WriteConfig(c *config.Config) error {
 	b, err := config.Marshal(c)
 	if err != nil {
 		return err
 	}
-	err = n.SendFile(ctx, filepath.Join(n.IPFSPath(), "config"), bytes.NewReader(b))
+	err = n.SendFile(filepath.Join(n.IPFSPath(), "config"), bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (n *Node) UpdateConfig(ctx context.Context, f func(cfg *config.Config)) error {
-	cfg, err := n.ReadConfig(ctx)
+func (n *Node) UpdateConfig(f func(cfg *config.Config)) error {
+	cfg, err := n.ReadConfig()
 	if err != nil {
 		return err
 	}
 	f(cfg)
-	return n.WriteConfig(ctx, cfg)
+	return n.WriteConfig(cfg)
 }
 
 func MultiaddrContains(ma multiaddr.Multiaddr, component *multiaddr.Component) (bool, error) {

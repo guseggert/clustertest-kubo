@@ -1,13 +1,16 @@
 package kubo
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	_ "net/http/pprof"
 
 	"github.com/guseggert/clustertest/cluster"
+	"github.com/guseggert/clustertest/cluster/basic"
 	"github.com/guseggert/clustertest/cluster/local"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,8 +21,8 @@ import (
 var logger *zap.SugaredLogger
 
 func init() {
-	// l, err := zap.NewProduction()
-	l, err := zap.NewDevelopment()
+	l, err := zap.NewProduction()
+	// l, err := zap.NewDevelopment()
 	if err != nil {
 		panic(err)
 	}
@@ -32,48 +35,59 @@ func TestKuboVersions(t *testing.T) {
 	ctx := context.Background()
 	clusterImpl, err := local.NewCluster()
 	// clusterImpl, err := docker.NewCluster("ubuntu")
+	// clusterImpl = clusterImpl.WithLogger(logger)
 	// clusterImpl, err := aws.NewCluster()
 	require.NoError(t, err)
 
-	bc, err := cluster.New(clusterImpl, cluster.WithLogger(logger))
-	require.NoError(t, err)
+	bc := basic.New(clusterImpl).WithLogger(logger)
+	c := New(bc)
 
-	c := &Cluster{BasicCluster: bc}
+	// defer c.Cleanup()
 
-	defer c.Cleanup(ctx)
-
-	versions := [][]NodeOption{
-		{WithKuboVersion("v0.15.0")},
-		{WithKuboVersion("v0.16.0")},
-		{WithKuboVersion("v0.17.0")},
-		{WithKuboVersion("v0.18.0-rc1")},
+	versions := []string{
+		"v0.15.0",
+		"v0.16.0",
+		"v0.17.0",
+		"v0.18.0-rc1",
 	}
 
-	nodes, err := c.NewNodesWithOpts(ctx, versions)
+	nodes := Must2(c.NewNodes(len(versions)))
+	for i, node := range nodes {
+		nodes[i] = node.WithKuboVersion(versions[i])
+	}
+
 	require.NoError(t, err)
 
 	// For each version, load the Kubo binary, initialize the repo, and run the daemon.
 	group, groupCtx := errgroup.WithContext(ctx)
-	daemonCtx, daemonCancel := context.WithCancel(ctx)
-	daemonGroup, daemonGroupCtx := errgroup.WithContext(daemonCtx)
+	var daemonsMut sync.Mutex
+	var daemons []*Daemon
 	for _, node := range nodes {
-		node := node
+		node := node.Context(groupCtx)
 		group.Go(func() error {
-			err := node.LoadBinary(groupCtx)
+			err := node.LoadBinary()
 			if err != nil {
 				return fmt.Errorf("loading binary: %w", err)
 			}
-			err = node.Init(groupCtx)
+			err = node.Init()
 			if err != nil {
 				return err
 			}
 
-			err = node.ConfigureForRemote(groupCtx)
+			err = node.ConfigureForRemote()
 			if err != nil {
 				return err
 			}
-			daemonGroup.Go(func() error { return node.RunDaemon(daemonGroupCtx) })
-			err = node.WaitOnAPI(ctx)
+			daemon, err := node.StartDaemon()
+			if err != nil {
+				return err
+			}
+
+			daemonsMut.Lock()
+			daemons = append(daemons, daemon)
+			daemonsMut.Unlock()
+
+			err = node.WaitOnAPI()
 			if err != nil {
 				return err
 			}
@@ -85,30 +99,27 @@ func TestKuboVersions(t *testing.T) {
 	// verify that the versions are what we expect
 	actualVersions := map[string]bool{}
 	for _, node := range nodes {
-		apiClient, err := node.RPCAPIClient(ctx)
-		require.NoError(t, err)
+		apiClient := Must2(node.RPCAPIClient())
 		vers, _, err := apiClient.Version()
 		require.NoError(t, err)
 		actualVersions[vers] = true
 	}
 
 	expectedVersions := map[string]bool{
-		"0.18.0-rc1": true,
-		"0.17.0":     true,
-		"0.16.0":     true,
 		"0.15.0":     true,
+		"0.16.0":     true,
+		"0.17.0":     true,
+		"0.18.0-rc1": true,
 	}
+
 	assert.Equal(t, expectedVersions, actualVersions)
 
 	ensureConnected := func(from *Node, to *Node) {
 		connected := false
-		httpClient, err := from.RPCHTTPClient(ctx)
-		require.NoError(t, err)
-		fromCIs, err := httpClient.Swarm().Peers(ctx)
-		require.NoError(t, err)
+		httpClient := Must2(from.RPCHTTPClient())
+		fromCIs := Must2(httpClient.Swarm().Peers(ctx))
 		for _, ci := range fromCIs {
-			toAI, err := to.AddrInfo(ctx)
-			require.NoError(t, err)
+			toAI := Must2(to.AddrInfo())
 			if ci.ID() == toAI.ID {
 				connected = true
 			}
@@ -119,10 +130,8 @@ func TestKuboVersions(t *testing.T) {
 	// Connect every node to every other node, then verify that the connect succeded
 	for _, from := range nodes {
 		for _, to := range nodes {
-			fromAI, err := from.AddrInfo(ctx)
-			require.NoError(t, err)
-			toAI, err := to.AddrInfo(ctx)
-			require.NoError(t, err)
+			fromAI := Must2(from.AddrInfo())
+			toAI := Must2(to.AddrInfo())
 
 			if fromAI.ID == toAI.ID {
 				continue
@@ -130,18 +139,27 @@ func TestKuboVersions(t *testing.T) {
 
 			RemoveLocalAddrs(toAI)
 
-			apiClient, err := from.RPCAPIClient(ctx)
-			require.NoError(t, err)
+			apiClient := Must2(from.RPCAPIClient())
 
 			err = apiClient.SwarmConnect(ctx, toAI.Addrs[0].String())
 			require.NoError(t, err)
 
-			// TODO poll, don't sleep
 			ensureConnected(from, to)
 		}
 	}
 
-	// cancel the context and observe that daemons exit
-	daemonCancel()
-	require.ErrorIs(t, context.Canceled, daemonGroup.Wait())
+	for _, n := range nodes {
+		var stdout bytes.Buffer
+		res, err := n.RunKubo(cluster.StartProcRequest{
+			Args:   []string{"id"},
+			Stdout: &stdout,
+		})
+		require.NoError(t, err)
+		require.Equal(t, 0, res.ExitCode)
+	}
+
+	// stop the daemons
+	for _, d := range daemons {
+		assert.NoError(t, d.Stop())
+	}
 }

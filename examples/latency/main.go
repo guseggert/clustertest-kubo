@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -13,12 +15,15 @@ import (
 	kubo "github.com/guseggert/clustertest-kubo"
 	"github.com/guseggert/clustertest/cluster"
 	"github.com/guseggert/clustertest/cluster/aws"
+	"github.com/guseggert/clustertest/cluster/basic"
+	"github.com/guseggert/clustertest/cluster/docker"
+	"github.com/guseggert/clustertest/cluster/local"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
-// example invocation: ./latency --region eu-north-1 --versions v0.17.0,v0.16.0,v0.15.0 --nodes-per-version 5 --settle 10s --urls /ipns/filecoin.io,/ipns/ipfs.io --times 5
+// example invocation: ./latency --region eu-north-1 --versions v0.17.0,v0.16.0,v0.15.0 --nodes-per-version 5 --settle 10s --urls /ipns/filecoin.io,/ipns/ipfs.io --times 5 --cluster aws
 func main() {
 	app := &cli.App{
 		Name:  "latency",
@@ -35,9 +40,9 @@ func main() {
 				Value: 1,
 			},
 			&cli.StringFlag{
-				Name:     "region",
-				Usage:    "the AWS region to use",
-				Required: true,
+				Name:  "region",
+				Usage: "the AWS region to use, if using an AWS cluster",
+				Value: "us-east-1",
 			},
 			&cli.StringFlag{
 				Name:  "settle",
@@ -54,6 +59,14 @@ func main() {
 				Usage: "number of times to test each URL",
 				Value: 5,
 			},
+			&cli.StringFlag{
+				Name:  "cluster",
+				Usage: "the cluster type to use, one of [local,docker,aws]",
+				Value: "docker",
+			},
+			&cli.BoolFlag{
+				Name: "verbose",
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			versions := cliCtx.StringSlice("versions")
@@ -61,77 +74,81 @@ func main() {
 			urls := cliCtx.StringSlice("urls")
 			times := cliCtx.Int("times")
 			region := cliCtx.String("region")
+			clusterType := cliCtx.String("cluster")
+			verbose := cliCtx.Bool("verbose")
 			settleStr := cliCtx.String("settle")
 			settle, err := time.ParseDuration(settleStr)
 			if err != nil {
 				return fmt.Errorf("parsing settle: %w", err)
 			}
 
-			// l, err := zap.NewProduction()
-			l, err := zap.NewDevelopment()
+			var l *zap.Logger
+			if verbose {
+				l, err = zap.NewDevelopment()
+			} else {
+				l, err = zap.NewProduction()
+			}
 			if err != nil {
 				return fmt.Errorf("initializing logger: %w", err)
 			}
-
 			logger := l.Sugar()
 
 			ctx := cliCtx.Context
 
-			// clusterImpl, err := docker.NewCluster("ubuntu")
-			clusterImpl, err := aws.NewClusterWithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region})))
-			if err != nil {
-				return fmt.Errorf("creating AWS cluster: %w", err)
+			var clusterImpl cluster.Cluster
+			switch clusterType {
+			case "local":
+				clusterImpl, err = local.NewCluster()
+			case "docker":
+				dc, dcErr := docker.NewCluster()
+				err = dcErr
+				if err == nil {
+					dc.WithLogger(logger)
+				}
+				clusterImpl = dc
+			case "aws":
+				clusterImpl = aws.NewCluster().
+					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region}))).
+					WithAMIID("ami-0bddd4073d6eba21d").
+					WithLogger(logger)
+			default:
+				return fmt.Errorf("unknown cluster type %q", clusterType)
 			}
 
-			bc, err := cluster.New(clusterImpl, cluster.WithLogger(logger))
-			if err != nil {
-				return fmt.Errorf("creating basic cluster: %w", err)
-			}
+			c := kubo.New(basic.New(clusterImpl).WithLogger(logger))
 
-			c := &kubo.Cluster{BasicCluster: bc}
+			defer c.Cleanup()
 
-			defer c.Cleanup(ctx)
-
-			var versionOpts [][]kubo.NodeOption
+			log.Printf("Launching %d nodes", len(versions)*nodesPerVersion)
+			nodes := c.MustNewNodes(len(versions) * nodesPerVersion)
 			var nodeVersions []string
-			for _, v := range versions {
-				for i := 0; i < nodesPerVersion; i++ {
-					versionOpts = append(versionOpts, []kubo.NodeOption{kubo.WithKuboVersion(v)})
+			for i, v := range versions {
+				for j := 0; j < nodesPerVersion; j++ {
+					node := nodes[i*nodesPerVersion+j]
+					node.WithKuboVersion(v)
 					nodeVersions = append(nodeVersions, v)
 				}
 			}
 
-			log.Printf("Launching %d nodes in %s", len(versionOpts), region)
-			nodes, err := c.NewNodesWithOpts(ctx, versionOpts)
-			if err != nil {
-				return fmt.Errorf("launchign nodes: %w", err)
-			}
-
 			// For each version, load the Kubo binary, initialize the repo, and run the daemon.
 			group, groupCtx := errgroup.WithContext(ctx)
-			daemonCtx, daemonCancel := context.WithCancel(ctx)
-			defer daemonCancel()
-			daemonGroup, daemonGroupCtx := errgroup.WithContext(daemonCtx)
 			for _, node := range nodes {
 				node := node
 				group.Go(func() error {
-					err := node.LoadBinary(groupCtx)
+					node = node.Context(groupCtx)
+					err := node.LoadBinary()
 					if err != nil {
 						return fmt.Errorf("loading binary: %w", err)
 					}
-					err = node.Init(groupCtx)
+					err = node.Init()
 					if err != nil {
 						return fmt.Errorf("initializing kubo: %w", err)
 					}
-
-					err = node.ConfigureForRemote(groupCtx)
+					err = node.ConfigureForRemote()
 					if err != nil {
 						return fmt.Errorf("configuring kubo: %w", err)
 					}
-					daemonGroup.Go(func() error {
-						return node.RunDaemon(daemonGroupCtx)
-					})
-					err = node.WaitOnAPI(groupCtx)
+					_, err = node.Context(ctx).StartDaemonAndWaitForAPI()
 					if err != nil {
 						return fmt.Errorf("waiting for kubo to startup: %w", err)
 					}
@@ -155,47 +172,34 @@ func main() {
 			for i, node := range nodes {
 				node := node
 				nodeNum := i
-				version := nodeVersions[i]
 				group.Go(func() error {
-					gatewayURL, err := node.GatewayURL(groupCtx)
+					node = node.Context(groupCtx)
+					gatewayURL, err := node.GatewayURL()
 					if err != nil {
-						return fmt.Errorf("node %s getting gateway URL: %w", node, err)
+						return fmt.Errorf("node %s getting gateway URL: %w", node.Node.Node, err)
 					}
 
 					for _, u := range urls {
 						reqURL := fmt.Sprintf("http://localhost:%s%s", gatewayURL.Port(), u)
 						for i := 0; i < times; i++ {
-							curlCtx, cancelCurl := context.WithTimeout(groupCtx, 5*time.Minute)
-							res, err := node.Run(curlCtx, cluster.StartProcRequest{
-								Command: "curl",
-								Args:    []string{reqURL},
-							})
+							loadTime, err := runPhantomas(groupCtx, node)
 							if err != nil {
-								fmt.Printf("node %d error running curl: %s\n", nodeNum, err)
-								cancelCurl()
-								continue
+								return fmt.Errorf("running phantomas: %w", err)
 							}
-							if res.ExitCode != 0 {
-								fmt.Printf("node %d non-zero exit code %d\n", nodeNum, res.ExitCode)
-								cancelCurl()
-								continue
-							}
-							cancelCurl()
 
-							timeMS := res.TimeMS
-							fmt.Printf("node: %d\turl:%s\treq: %d\tversion: %s\tlatency (ms): %d\n", nodeNum, reqURL, i, version, timeMS)
+							fmt.Printf("node: %d\turl: %s\treq: %d\tversion: %s\tlatency (ms): %s\n", nodeNum, reqURL, i, node.MustVersion(), loadTime)
 
 							m.Lock()
 							if results[nodeNum] == nil {
 								results[nodeNum] = map[string][]int64{}
 							}
-							results[nodeNum][u] = append(results[nodeNum][u], timeMS)
+							results[nodeNum][u] = append(results[nodeNum][u], loadTime.Milliseconds())
 							m.Unlock()
 
 							gcCtx, cancelGC := context.WithTimeout(groupCtx, 10*time.Second)
-							err = node.RunKubo(gcCtx, cluster.StartProcRequest{
+							err = kubo.ProcMust(node.Context(gcCtx).RunKubo(cluster.StartProcRequest{
 								Args: []string{"repo", "gc"},
-							})
+							}))
 							if err != nil {
 								cancelGC()
 								return fmt.Errorf("node %d running gc: %w", nodeNum, err)
@@ -221,9 +225,6 @@ func main() {
 				}
 			}
 
-			daemonCancel()
-			daemonGroup.Wait()
-
 			return nil
 		},
 	}
@@ -231,4 +232,60 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+type phantomasOutput struct {
+	Metrics struct {
+		PerformanceTimingPageLoad int
+	}
+}
+
+func runPhantomas(ctx context.Context, node *kubo.Node) (*time.Duration, error) {
+	ctx, cancelCurl := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancelCurl()
+
+	gatewayURL, err := node.GatewayURL()
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = node.Run(cluster.StartProcRequest{
+		Command: "docker",
+		Args: []string{
+			"pull",
+			"macbre/phantomas:latest",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	_, err = node.Run(cluster.StartProcRequest{
+		Command: "docker",
+		Args: []string{
+			"run",
+			"--network=host",
+			"--privileged",
+			"macbre/phantomas:latest",
+			"/opt/phantomas/bin/phantomas.js",
+			"--timeout=60",
+			fmt.Sprintf("--url=%s/ipns/protocol.ai", gatewayURL),
+		},
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	if err != nil {
+		fmt.Printf("stdout: %s\n", stdout)
+		fmt.Printf("stderr: %s\n", stderr)
+		return nil, err
+	}
+	out := &phantomasOutput{}
+	err = json.Unmarshal(stdout.Bytes(), out)
+	if err != nil {
+		return nil, err
+	}
+	loadTime := time.Duration(out.Metrics.PerformanceTimingPageLoad) * time.Millisecond
+	return &loadTime, nil
 }
