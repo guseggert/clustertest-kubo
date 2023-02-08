@@ -44,10 +44,10 @@ func main() {
 				Usage: "the AWS region to use, if using an AWS cluster",
 				Value: "us-east-1",
 			},
-			&cli.StringFlag{
+			&cli.DurationFlag{
 				Name:  "settle",
 				Usage: "the duration to wait after all daemons are online before starting the test",
-				Value: "10s",
+				Value: 10 * time.Second,
 			},
 			&cli.StringSliceFlag{
 				Name:     "urls",
@@ -67,22 +67,25 @@ func main() {
 			&cli.BoolFlag{
 				Name: "verbose",
 			},
+			&cli.StringFlag{
+				Name:  "nodeagent",
+				Usage: "path to the nodeagent binary",
+				Value: "",
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			versions := cliCtx.StringSlice("versions")
 			nodesPerVersion := cliCtx.Int("nodes-per-version")
+			nodeagent := cliCtx.String("nodeagent")
 			urls := cliCtx.StringSlice("urls")
 			times := cliCtx.Int("times")
 			region := cliCtx.String("region")
 			clusterType := cliCtx.String("cluster")
 			verbose := cliCtx.Bool("verbose")
-			settleStr := cliCtx.String("settle")
-			settle, err := time.ParseDuration(settleStr)
-			if err != nil {
-				return fmt.Errorf("parsing settle: %w", err)
-			}
+			settle := cliCtx.Duration("settle")
 
 			var l *zap.Logger
+			var err error
 			if verbose {
 				l, err = zap.NewDevelopment()
 			} else {
@@ -108,6 +111,7 @@ func main() {
 				clusterImpl = dc
 			case "aws":
 				clusterImpl = aws.NewCluster().
+					WithNodeAgentBin(nodeagent).
 					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region}))).
 					WithAMIID("ami-0bddd4073d6eba21d").
 					WithLogger(logger)
