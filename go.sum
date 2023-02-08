@@ -462,8 +462,8 @@ github.com/grpc-ecosystem/grpc-gateway v1.5.0/go.mod h1:RSKVYQBd5MCa4OVpNdGskqpg
 github.com/grpc-ecosystem/grpc-gateway v1.9.5/go.mod h1:vNeuVxBJEsws4ogUvrchl83t/GYV9WGTSLVdBhOQFDY=
 github.com/grpc-ecosystem/grpc-gateway v1.12.1/go.mod h1:8XEsbTttt/W+VvjtQhLACqCisSPWTxCZ7sBRjU6iH9c=
 github.com/grpc-ecosystem/grpc-gateway v1.16.0/go.mod h1:BDjrQk3hbvj6Nolgz8mAMFbcEtjT1g+wF4CSlocrBnw=
-github.com/guseggert/clustertest v0.0.0-20230202214239-a6539fc7cb65 h1:sg0vN9jbuHdpeBk/O+EslHBzRTM6Z1wWQqgRz5U1BoM=
-github.com/guseggert/clustertest v0.0.0-20230202214239-a6539fc7cb65/go.mod h1:+DUpurx8DkdEL0udWwdXc0pg3Df++D2du0JgpxjlBqY=
+github.com/guseggert/clustertest v0.0.0-20230208164507-f5fc1ff66427 h1:5/NuMD867FzTXUhohYP6z8sl4vwElqiXeJHcUtLpIBc=
+github.com/guseggert/clustertest v0.0.0-20230208164507-f5fc1ff66427/go.mod h1:+DUpurx8DkdEL0udWwdXc0pg3Df++D2du0JgpxjlBqY=
 github.com/gxed/hashland/keccakpg v0.0.1/go.mod h1:kRzw3HkwxFU1mpmPP8v1WyQzwdGfmKFJ6tItnhQ67kU=
 github.com/gxed/hashland/murmur3 v0.0.1/go.mod h1:KjXop02n4/ckmZSnY2+HKcLud/tcmvhST0bie/0lS48=
 github.com/hashicorp/consul/api v1.1.0/go.mod h1:VmuI/Lkw1nC05EYQWNKwWGbkg+FbDBtguAZLlVdkD9Q=

@@ -98,7 +98,7 @@ func main() {
 			var clusterImpl cluster.Cluster
 			switch clusterType {
 			case "local":
-				clusterImpl, err = local.NewCluster()
+				clusterImpl = local.NewCluster()
 			case "docker":
 				dc, dcErr := docker.NewCluster()
 				err = dcErr
