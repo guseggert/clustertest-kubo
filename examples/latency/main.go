@@ -44,10 +44,10 @@ func main() {
 				Usage: "the AWS region to use, if using an AWS cluster",
 				Value: "us-east-1",
 			},
-			&cli.StringFlag{
+			&cli.DurationFlag{
 				Name:  "settle",
 				Usage: "the duration to wait after all daemons are online before starting the test",
-				Value: "10s",
+				Value: 10 * time.Second,
 			},
 			&cli.StringSliceFlag{
 				Name:     "urls",
@@ -76,13 +76,10 @@ func main() {
 			region := cliCtx.String("region")
 			clusterType := cliCtx.String("cluster")
 			verbose := cliCtx.Bool("verbose")
-			settleStr := cliCtx.String("settle")
-			settle, err := time.ParseDuration(settleStr)
-			if err != nil {
-				return fmt.Errorf("parsing settle: %w", err)
-			}
+			settle := cliCtx.Duration("settle")
 
 			var l *zap.Logger
+			var err error
 			if verbose {
 				l, err = zap.NewDevelopment()
 			} else {
