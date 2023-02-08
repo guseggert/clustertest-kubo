@@ -67,10 +67,16 @@ func main() {
 			&cli.BoolFlag{
 				Name: "verbose",
 			},
+			&cli.StringFlag{
+				Name:  "nodeagent",
+				Usage: "path to the nodeagent binary",
+				Value: "",
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			versions := cliCtx.StringSlice("versions")
 			nodesPerVersion := cliCtx.Int("nodes-per-version")
+			nodeagent := cliCtx.String("nodeagent")
 			urls := cliCtx.StringSlice("urls")
 			times := cliCtx.Int("times")
 			region := cliCtx.String("region")
@@ -105,6 +111,7 @@ func main() {
 				clusterImpl = dc
 			case "aws":
 				clusterImpl = aws.NewCluster().
+					WithNodeAgentBin(nodeagent).
 					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region}))).
 					WithAMIID("ami-0bddd4073d6eba21d").
 					WithLogger(logger)
