@@ -409,20 +409,13 @@ func (n *Node) WaitOnAPI() error {
 }
 
 func (n *Node) checkAPI() bool {
-	apiAddr, err := n.APIAddr()
+	host, port, err := n.APIHostPort()
 	if err != nil {
-		n.Log.Debugf("API addr not available yet: %s", err.Error())
+		n.Log.Debugf("API not ready: %s", err.Error())
 		return false
 	}
-	ip, err := apiAddr.ValueForProtocol(multiaddr.P_IP4)
-	if err != nil {
-		n.Log.Fatal(err)
-	}
-	port, err := apiAddr.ValueForProtocol(multiaddr.P_TCP)
-	if err != nil {
-		n.Log.Fatal(err)
-	}
-	url := fmt.Sprintf("http://%s:%s/api/v0/id", ip, port)
+
+	url := fmt.Sprintf("http://%s:%s/api/v0/id", host, port)
 
 	n.Log.Debugf("checking API at %s", url)
 
@@ -454,6 +447,92 @@ func (n *Node) checkAPI() bool {
 	}
 	n.Log.Debug("API check successful")
 	return true
+}
+
+func (n *Node) WaitOnRefreshedRoutingTable() error {
+	n.Log.Debug("waiting on refreshed routing table")
+	for i := 0; i < 900; i++ { // routing table refresh can take up to 10m - so give some buffer
+		if n.checkRefreshedRoutingTable() {
+			n.Log.Debugf("routing table is refreshed")
+			return nil
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+	n.Log.Debug("node %s failed to refresh its routing table in time", n)
+	return errors.New("timed out waiting on routing table refresh")
+}
+
+func (n *Node) checkRefreshedRoutingTable() bool {
+	host, port, err := n.APIHostPort()
+	if err != nil {
+		n.Log.Debugf("API not ready: %s", err.Error())
+		return false
+	}
+
+	// https://docs.ipfs.tech/reference/kubo/rpc/#api-v0-stats-dht
+	url := fmt.Sprintf("http://%s:%s/api/v0/stats/dht?arg=wan", host, port)
+
+	n.Log.Debugf("checking refreshed routing table at %s", url)
+
+	httpResp, err := n.HTTPClient.Post(url, "", nil)
+	if err != nil {
+		n.Log.Debugf("API check error: %s", err.Error())
+		return false
+	}
+	defer httpResp.Body.Close()
+	resp := struct {
+		Buckets []struct {
+			LastRefresh string
+		}
+	}{}
+
+	respBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		n.Log.Debugf("error reading routing table refresh check response: %s", err.Error())
+		return false
+	}
+	n.Log.Debugf("got routing table response")
+
+	err = json.Unmarshal(respBytes, &resp)
+	if err != nil {
+		n.Log.Debugf("error decoding API check response: %s", err.Error())
+		return false
+	}
+
+	if len(resp.Buckets) == 0 {
+		n.Log.Debugf("unexpected bucket length 0")
+		return false
+	}
+
+	refreshedBuckets := 0
+	for _, bucket := range resp.Buckets {
+		if bucket.LastRefresh != "" {
+			refreshedBuckets += 1
+		}
+	}
+
+	n.Log.Debugf("refreshed %d of %d buckets", refreshedBuckets, len(resp.Buckets))
+	return refreshedBuckets >= 16 || refreshedBuckets == len(resp.Buckets)
+}
+
+func (n *Node) APIHostPort() (string, string, error) {
+	apiAddr, err := n.APIAddr()
+	if err != nil {
+		return "", "", err
+	}
+
+	ip, err := apiAddr.ValueForProtocol(multiaddr.P_IP4)
+	if err != nil {
+		return "", "", err
+	}
+
+	port, err := apiAddr.ValueForProtocol(multiaddr.P_TCP)
+	if err != nil {
+		return "", "", err
+	}
+
+	return ip, port, nil
 }
 
 func (n *Node) ReadConfig() (*config.Config, error) {
