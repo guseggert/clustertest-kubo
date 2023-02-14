@@ -309,7 +309,7 @@ func main() {
 					times := results[nodeNum][url]
 					for _, t := range times {
 						fmt.Printf("region=%s\tversion=%s\turl=%s\tnode=%d\tms=%d\n", region, version, url, nodeNum, t)
-						_, err = db.ExecContext(ctx, "INSERT INTO website_measurements (region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, NOW())", region, version, url, nodeNum, float64(t)/1000.0)
+						_, err = db.ExecContext(ctx, "INSERT INTO website_measurements (region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, NOW())", region, url, version, nodeNum, float64(t)/1000.0)
 						if err != nil {
 							fmt.Println("err inserting row:", err)
 						}
