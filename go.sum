@@ -201,8 +201,8 @@ github.com/decred/dcrd/dcrec/secp256k1/v4 v4.1.0 h1:HbphB4TFFXpv7MNrT52FGrrgVXF1
 github.com/decred/dcrd/dcrec/secp256k1/v4 v4.1.0/go.mod h1:DZGJHZMqrU4JJqFAWUS2UO1+lbSKsdiOoYi9Zzey7Fc=
 github.com/decred/dcrd/lru v1.0.0/go.mod h1:mxKOwFd7lFjN2GZYsiz/ecgqR6kkYAl+0pz0tEMk218=
 github.com/denis-tingajkin/go-header v0.4.2/go.mod h1:eLRHAVXzE5atsKAnNRDB90WHCFFnBUn4RN0nRcs1LJA=
-github.com/dennis-tra/clustertest v0.0.0-20230214114134-2340b45387c1 h1:EqSDPF2chTG+vr/kUsepykxC85PoMQgB9yx6Q782mco=
-github.com/dennis-tra/clustertest v0.0.0-20230214114134-2340b45387c1/go.mod h1:+DUpurx8DkdEL0udWwdXc0pg3Df++D2du0JgpxjlBqY=
+github.com/dennis-tra/clustertest v0.0.0-20230214171044-d2f0c8716aa4 h1:K0IpwPxtXIBNX6wS3rSReKoYc6UJFUqrpmqmWBGfjlE=
+github.com/dennis-tra/clustertest v0.0.0-20230214171044-d2f0c8716aa4/go.mod h1:+DUpurx8DkdEL0udWwdXc0pg3Df++D2du0JgpxjlBqY=
 github.com/dgraph-io/badger v1.5.5-0.20190226225317-8115aed38f8f/go.mod h1:VZxzAIRPHRVNRKRo6AXrX9BJegn6il06VMTZVJYCIjQ=
 github.com/dgraph-io/badger v1.6.0-rc1/go.mod h1:zwt7syl517jmP8s94KqSxTlM6IMsdhYy6psNgSztDR4=
 github.com/dgraph-io/badger v1.6.0/go.mod h1:zwt7syl517jmP8s94KqSxTlM6IMsdhYy6psNgSztDR4=
