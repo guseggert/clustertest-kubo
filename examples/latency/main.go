@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/aws-sdk-go/aws/session"
 	kubo "github.com/guseggert/clustertest-kubo"
 	"github.com/guseggert/clustertest/cluster"
@@ -18,6 +21,8 @@ import (
 	"github.com/guseggert/clustertest/cluster/basic"
 	"github.com/guseggert/clustertest/cluster/docker"
 	"github.com/guseggert/clustertest/cluster/local"
+	_ "github.com/lib/pq"
+	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -30,59 +35,119 @@ func main() {
 		Usage: "measures the latency of making requests to the local gateway",
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
-				Name:  "versions",
-				Usage: "the kubo versions to test (comma-separated), e.g. 'v0.16.0,v0.17.0'.",
-				Value: cli.NewStringSlice("v0.17.0"),
+				Name:    "versions",
+				Usage:   "the kubo versions to test (comma-separated), e.g. 'v0.16.0,v0.17.0'.",
+				Value:   cli.NewStringSlice("v0.17.0"),
+				EnvVars: []string{"CLUSTERTEST_VERSIONS"},
 			},
 			&cli.IntFlag{
-				Name:  "nodes-per-version",
-				Usage: "the number of nodes per version to run",
-				Value: 1,
+				Name:    "nodes-per-version",
+				Usage:   "the number of nodes per version to run",
+				Value:   1,
+				EnvVars: []string{"CLUSTERTEST_NODES_PER_VERSION"},
 			},
 			&cli.StringFlag{
-				Name:  "region",
-				Usage: "the AWS region to use, if using an AWS cluster",
-				Value: "us-east-1",
+				Name:    "region",
+				Usage:   "the AWS region to use, if using an AWS cluster",
+				Value:   "us-east-1",
+				EnvVars: []string{"CLUSTERTEST_REGION"},
 			},
-			&cli.StringFlag{
-				Name:  "settle",
-				Usage: "the duration to wait after all daemons are online before starting the test",
-				Value: "10s",
+			&cli.DurationFlag{
+				Name:    "settle",
+				Usage:   "the duration to wait after all daemons are online before starting the test",
+				Value:   10 * time.Second,
+				EnvVars: []string{"CLUSTERTEST_SETTLE"},
 			},
 			&cli.StringSliceFlag{
 				Name:     "urls",
 				Usage:    "URLs to test against, relative to the gateway URL. Example: '/ipns/ipfs.io'",
 				Required: true,
+				EnvVars:  []string{"CLUSTERTEST_URLS"},
 			},
 			&cli.IntFlag{
-				Name:  "times",
-				Usage: "number of times to test each URL",
-				Value: 5,
+				Name:    "times",
+				Usage:   "number of times to test each URL",
+				Value:   5,
+				EnvVars: []string{"CLUSTERTEST_TIMES"},
 			},
 			&cli.StringFlag{
-				Name:  "cluster",
-				Usage: "the cluster type to use, one of [local,docker,aws]",
-				Value: "docker",
+				Name:    "cluster",
+				Usage:   "the cluster type to use, one of [local,docker,aws]",
+				Value:   "docker",
+				EnvVars: []string{"CLUSTERTEST_CLUSTER_TYPE"},
 			},
 			&cli.BoolFlag{
 				Name: "verbose",
+			},
+			&cli.StringFlag{
+				Name:    "nodeagent",
+				Usage:   "path to the nodeagent binary",
+				Value:   "",
+				EnvVars: []string{"CLUSTERTEST_NODEAGENT_BIN"},
+			},
+			&cli.StringFlag{
+				Name:    "db-host",
+				Usage:   "On which host address can this clustertest reach the database",
+				EnvVars: []string{"CLUSTERTEST_DATABASE_HOST"},
+			},
+			&cli.IntFlag{
+				Name:    "db-port",
+				Usage:   "On which port can this clustertest reach the database",
+				EnvVars: []string{"CLUSTERTEST_DATABASE_PORT"},
+			},
+			&cli.StringFlag{
+				Name:    "db-name",
+				Usage:   "The name of the database to use",
+				EnvVars: []string{"CLUSTERTEST_DATABASE_NAME"},
+			},
+			&cli.StringFlag{
+				Name:    "db-password",
+				Usage:   "The password for the database to use",
+				EnvVars: []string{"CLUSTERTEST_DATABASE_PASSWORD"},
+			},
+			&cli.StringFlag{
+				Name:    "db-user",
+				Usage:   "The user with which to access the database to use",
+				EnvVars: []string{"CLUSTERTEST_DATABASE_USER"},
+			},
+			&cli.StringFlag{
+				Name:    "db-sslmode",
+				Usage:   "The sslmode to use when connecting the the database",
+				EnvVars: []string{"CLUSTERTEST_DATABASE_SSL_MODE"},
+			},
+			&cli.StringFlag{
+				Name:    "public-subnet-id",
+				Usage:   "The public subnet ID to run the cluster in",
+				EnvVars: []string{"CLUSTERTEST_PUBLIC_SUBNET_ID"},
+			},
+			&cli.StringFlag{
+				Name:    "instance-profile-arn",
+				Usage:   "The instance profile to run the Kubo nodes with",
+				EnvVars: []string{"CLUSTERTEST_INSTANCE_PROFILE_ARN"},
+			},
+			&cli.StringFlag{
+				Name:    "instance-security-group-id",
+				Usage:   "The security group of the Kubo instances",
+				EnvVars: []string{"CLUSTERTEST_SECURITY_GROUP_ID"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-bucket-arn",
+				EnvVars: []string{"CLUSTERTEST_S3_BUCKET_ARN"},
 			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			versions := cliCtx.StringSlice("versions")
 			nodesPerVersion := cliCtx.Int("nodes-per-version")
+			nodeagent := cliCtx.String("nodeagent")
 			urls := cliCtx.StringSlice("urls")
 			times := cliCtx.Int("times")
 			region := cliCtx.String("region")
 			clusterType := cliCtx.String("cluster")
 			verbose := cliCtx.Bool("verbose")
-			settleStr := cliCtx.String("settle")
-			settle, err := time.ParseDuration(settleStr)
-			if err != nil {
-				return fmt.Errorf("parsing settle: %w", err)
-			}
+			settle := cliCtx.Duration("settle")
 
 			var l *zap.Logger
+			var err error
 			if verbose {
 				l, err = zap.NewDevelopment()
 			} else {
@@ -92,6 +157,12 @@ func main() {
 				return fmt.Errorf("initializing logger: %w", err)
 			}
 			logger := l.Sugar()
+
+			db, err := InitDB(cliCtx)
+			if err != nil {
+				return fmt.Errorf("initializing database connection: %w", err)
+			}
+			defer db.Close()
 
 			ctx := cliCtx.Context
 
@@ -107,10 +178,23 @@ func main() {
 				}
 				clusterImpl = dc
 			case "aws":
+				iparn, err := arn.Parse(cliCtx.String("instance-profile-arn"))
+				if err != nil {
+					return fmt.Errorf("error parsing instnace profile arn: %w", err)
+				}
+
+				s3arn, err := arn.Parse(cliCtx.String("s3-bucket-arn"))
+				if err != nil {
+					return fmt.Errorf("error parsing s3 bucket arn: %w", err)
+				}
 				clusterImpl = aws.NewCluster().
+					WithNodeAgentBin(nodeagent).
 					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region}))).
-					WithAMIID("ami-0bddd4073d6eba21d").
-					WithLogger(logger)
+					WithLogger(logger).
+					WithPublicSubnetID(cliCtx.String("public-subnet-id")).
+					WithInstanceProfileARN(iparn).
+					WithInstanceSecurityGroupID(cliCtx.String("instance-security-group-id")).
+					WithS3BucketARN(s3arn)
 			default:
 				return fmt.Errorf("unknown cluster type %q", clusterType)
 			}
@@ -152,6 +236,10 @@ func main() {
 					if err != nil {
 						return fmt.Errorf("waiting for kubo to startup: %w", err)
 					}
+					//err = node.Context(ctx).WaitOnRefreshedRoutingTable()
+					//if err != nil {
+					//	return fmt.Errorf("waiting for kubo to startup: %w", err)
+					//}
 					return nil
 				})
 			}
@@ -221,6 +309,10 @@ func main() {
 					times := results[nodeNum][url]
 					for _, t := range times {
 						fmt.Printf("region=%s\tversion=%s\turl=%s\tnode=%d\tms=%d\n", region, version, url, nodeNum, t)
+						_, err = db.ExecContext(ctx, "INSERT INTO website_measurements (region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, NOW())", region, url, version, nodeNum, float64(t)/1000.0)
+						if err != nil {
+							fmt.Println("err inserting row:", err)
+						}
 					}
 				}
 			}
@@ -288,4 +380,31 @@ func runPhantomas(ctx context.Context, node *kubo.Node) (*time.Duration, error) 
 	}
 	loadTime := time.Duration(out.Metrics.PerformanceTimingPageLoad) * time.Millisecond
 	return &loadTime, nil
+}
+
+func InitDB(c *cli.Context) (*sql.DB, error) {
+	connectionString := fmt.Sprintf(
+		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
+		c.String("db-host"),
+		c.Int("db-port"),
+		c.String("db-name"),
+		c.String("db-user"),
+		c.String("db-password"),
+		c.String("db-sslmode"),
+	)
+
+	fmt.Println(strings.ReplaceAll(connectionString, c.String("db-password"), "***"))
+
+	// Open database handle
+	db, err := sql.Open("postgres", connectionString)
+	if err != nil {
+		return nil, errors.Wrap(err, "opening database")
+	}
+
+	// Ping database to verify connection.
+	if err = db.Ping(); err != nil {
+		return nil, errors.Wrap(err, "pinging database")
+	}
+
+	return db, nil
 }

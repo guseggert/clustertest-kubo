@@ -9,8 +9,10 @@ require (
 	github.com/ipfs/go-ipfs-api v0.3.1-0.20230115111907-7f63cbcb569f
 	github.com/ipfs/go-ipfs-http-client v0.4.1-0.20230115111817-c94830dff571
 	github.com/ipfs/kubo v0.17.0
+	github.com/lib/pq v1.10.3
 	github.com/libp2p/go-libp2p v0.24.2
 	github.com/multiformats/go-multiaddr v0.8.0
+	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.1
 	github.com/urfave/cli/v2 v2.23.7
 	go.uber.org/multierr v1.8.0
@@ -84,7 +86,6 @@ require (
 	github.com/opencontainers/image-spec v1.0.3-0.20220114050600-8b9d41f48198 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/polydawn/refmt v0.0.0-20201211092308-30ac6d18308e // indirect
 	github.com/rs/cors v1.7.0 // indirect
@@ -109,3 +110,5 @@ require (
 	lukechampine.com/blake3 v1.1.7 // indirect
 	nhooyr.io/websocket v1.8.7 // indirect
 )
+
+replace github.com/guseggert/clustertest v0.0.0-20230208164507-f5fc1ff66427 => github.com/dennis-tra/clustertest v0.0.0-20230214171044-d2f0c8716aa4
