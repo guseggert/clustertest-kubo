@@ -131,7 +131,7 @@ func main() {
 			nodeagent := cliCtx.String("nodeagent")
 			verbose := cliCtx.Bool("verbose")
 			regions := cliCtx.StringSlice("regions")
-			subnetIDs := cliCtx.StringSlice("public-subnet-id")
+			subnetIDs := cliCtx.StringSlice("public-subnet-ids")
 			instanceProfileARNs := cliCtx.StringSlice("instance-profile-arns")
 			instanceSecurityGroupIDs := cliCtx.StringSlice("instance-security-group-ids")
 			s3BucketARNs := cliCtx.StringSlice("s3-bucket-arns")
