@@ -19,8 +19,6 @@ import (
 	"github.com/guseggert/clustertest/cluster"
 	"github.com/guseggert/clustertest/cluster/aws"
 	"github.com/guseggert/clustertest/cluster/basic"
-	"github.com/guseggert/clustertest/cluster/docker"
-	"github.com/guseggert/clustertest/cluster/local"
 	_ "github.com/lib/pq"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
@@ -46,11 +44,10 @@ func main() {
 				Value:   1,
 				EnvVars: []string{"CLUSTERTEST_NODES_PER_VERSION"},
 			},
-			&cli.StringFlag{
-				Name:    "region",
-				Usage:   "the AWS region to use, if using an AWS cluster",
-				Value:   "us-east-1",
-				EnvVars: []string{"CLUSTERTEST_REGION"},
+			&cli.StringSliceFlag{
+				Name:    "regions",
+				Usage:   "the AWS regions to use, if using an AWS cluster",
+				EnvVars: []string{"CLUSTERTEST_REGIONS"},
 			},
 			&cli.DurationFlag{
 				Name:    "settle",
@@ -69,12 +66,6 @@ func main() {
 				Usage:   "number of times to test each URL",
 				Value:   5,
 				EnvVars: []string{"CLUSTERTEST_TIMES"},
-			},
-			&cli.StringFlag{
-				Name:    "cluster",
-				Usage:   "the cluster type to use, one of [local,docker,aws]",
-				Value:   "docker",
-				EnvVars: []string{"CLUSTERTEST_CLUSTER_TYPE"},
 			},
 			&cli.BoolFlag{
 				Name: "verbose",
@@ -115,36 +106,35 @@ func main() {
 				Usage:   "The sslmode to use when connecting the the database",
 				EnvVars: []string{"CLUSTERTEST_DATABASE_SSL_MODE"},
 			},
-			&cli.StringFlag{
-				Name:    "public-subnet-id",
-				Usage:   "The public subnet ID to run the cluster in",
-				EnvVars: []string{"CLUSTERTEST_PUBLIC_SUBNET_ID"},
+			&cli.StringSliceFlag{
+				Name:    "public-subnet-ids",
+				Usage:   "The public subnet IDs to run the cluster in",
+				EnvVars: []string{"CLUSTERTEST_PUBLIC_SUBNET_IDS"},
 			},
-			&cli.StringFlag{
-				Name:    "instance-profile-arn",
-				Usage:   "The instance profile to run the Kubo nodes with",
-				EnvVars: []string{"CLUSTERTEST_INSTANCE_PROFILE_ARN"},
+			&cli.StringSliceFlag{
+				Name:    "instance-profile-arns",
+				Usage:   "The instance profiles to run the Kubo nodes with",
+				EnvVars: []string{"CLUSTERTEST_INSTANCE_PROFILE_ARNS"},
 			},
-			&cli.StringFlag{
-				Name:    "instance-security-group-id",
-				Usage:   "The security group of the Kubo instances",
-				EnvVars: []string{"CLUSTERTEST_SECURITY_GROUP_ID"},
+			&cli.StringSliceFlag{
+				Name:    "instance-security-group-ids",
+				Usage:   "The security groups of the Kubo instances",
+				EnvVars: []string{"CLUSTERTEST_SECURITY_GROUP_IDS"},
 			},
-			&cli.StringFlag{
-				Name:    "s3-bucket-arn",
-				EnvVars: []string{"CLUSTERTEST_S3_BUCKET_ARN"},
+			&cli.StringSliceFlag{
+				Name:    "s3-bucket-arns",
+				EnvVars: []string{"CLUSTERTEST_S3_BUCKET_ARNS"},
 			},
 		},
 		Action: func(cliCtx *cli.Context) error {
-			versions := cliCtx.StringSlice("versions")
-			nodesPerVersion := cliCtx.Int("nodes-per-version")
+
 			nodeagent := cliCtx.String("nodeagent")
-			urls := cliCtx.StringSlice("urls")
-			times := cliCtx.Int("times")
-			region := cliCtx.String("region")
-			clusterType := cliCtx.String("cluster")
 			verbose := cliCtx.Bool("verbose")
-			settle := cliCtx.Duration("settle")
+			regions := cliCtx.StringSlice("regions")
+			subnetIDs := cliCtx.StringSlice("public-subnet-id")
+			instanceProfileARNs := cliCtx.StringSlice("instance-profile-arns")
+			instanceSecurityGroupIDs := cliCtx.StringSlice("instance-security-group-ids")
+			s3BucketARNs := cliCtx.StringSlice("s3-bucket-arns")
 
 			var l *zap.Logger
 			var err error
@@ -164,166 +154,171 @@ func main() {
 			}
 			defer db.Close()
 
-			ctx := cliCtx.Context
-
-			var clusterImpl cluster.Cluster
-			switch clusterType {
-			case "local":
-				clusterImpl = local.NewCluster()
-			case "docker":
-				dc, dcErr := docker.NewCluster()
-				err = dcErr
-				if err == nil {
-					dc.WithLogger(logger)
-				}
-				clusterImpl = dc
-			case "aws":
-				iparn, err := arn.Parse(cliCtx.String("instance-profile-arn"))
+			var clusterImpls []cluster.Cluster
+			for idx, region := range regions {
+				iparn, err := arn.Parse(instanceProfileARNs[idx])
 				if err != nil {
 					return fmt.Errorf("error parsing instnace profile arn: %w", err)
 				}
 
-				s3arn, err := arn.Parse(cliCtx.String("s3-bucket-arn"))
+				s3arn, err := arn.Parse(s3BucketARNs[idx])
 				if err != nil {
 					return fmt.Errorf("error parsing s3 bucket arn: %w", err)
 				}
-				clusterImpl = aws.NewCluster().
+
+				clusterImpl := aws.NewCluster().
 					WithNodeAgentBin(nodeagent).
 					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region}))).
 					WithLogger(logger).
-					WithPublicSubnetID(cliCtx.String("public-subnet-id")).
+					WithPublicSubnetID(subnetIDs[idx]).
 					WithInstanceProfileARN(iparn).
-					WithInstanceSecurityGroupID(cliCtx.String("instance-security-group-id")).
+					WithInstanceSecurityGroupID(instanceSecurityGroupIDs[idx]).
 					WithS3BucketARN(s3arn)
-			default:
-				return fmt.Errorf("unknown cluster type %q", clusterType)
-			}
 
-			c := kubo.New(basic.New(clusterImpl).WithLogger(logger))
-
-			defer c.Cleanup()
-
-			log.Printf("Launching %d nodes", len(versions)*nodesPerVersion)
-			nodes := c.MustNewNodes(len(versions) * nodesPerVersion)
-			var nodeVersions []string
-			for i, v := range versions {
-				for j := 0; j < nodesPerVersion; j++ {
-					node := nodes[i*nodesPerVersion+j]
-					node.WithKuboVersion(v)
-					nodeVersions = append(nodeVersions, v)
-				}
+				clusterImpls = append(clusterImpls, clusterImpl)
 			}
 
 			// For each version, load the Kubo binary, initialize the repo, and run the daemon.
-			group, groupCtx := errgroup.WithContext(ctx)
-			for _, node := range nodes {
-				node := node
-				group.Go(func() error {
-					node = node.Context(groupCtx)
-					err := node.LoadBinary()
-					if err != nil {
-						return fmt.Errorf("loading binary: %w", err)
-					}
-					err = node.Init()
-					if err != nil {
-						return fmt.Errorf("initializing kubo: %w", err)
-					}
-					err = node.ConfigureForRemote()
-					if err != nil {
-						return fmt.Errorf("configuring kubo: %w", err)
-					}
-					_, err = node.Context(ctx).StartDaemonAndWaitForAPI()
-					if err != nil {
-						return fmt.Errorf("waiting for kubo to startup: %w", err)
-					}
-					//err = node.Context(ctx).WaitOnRefreshedRoutingTable()
-					//if err != nil {
-					//	return fmt.Errorf("waiting for kubo to startup: %w", err)
-					//}
-					return nil
+			errg := errgroup.Group{}
+			for i, clusterImpl := range clusterImpls {
+				ci := clusterImpl
+				region := regions[i]
+				errg.Go(func() error {
+					return runRegion(cliCtx, db, ci, logger, region)
 				})
 			}
-			log.Printf("Setting up nodes")
-			err = group.Wait()
-			if err != nil {
-				return fmt.Errorf("waiting on nodes to setup: %w", err)
-			}
 
-			log.Printf("Daemons running, waiting to settle...\n")
-			time.Sleep(settle)
-
-			var m sync.Mutex
-			// map from node to url to list of latencies in attempt order
-			results := map[int]map[string][]int64{}
-
-			group, groupCtx = errgroup.WithContext(ctx)
-			for i, node := range nodes {
-				node := node
-				nodeNum := i
-				group.Go(func() error {
-					node = node.Context(groupCtx)
-					gatewayURL, err := node.GatewayURL()
-					if err != nil {
-						return fmt.Errorf("node %s getting gateway URL: %w", node.Node.Node, err)
-					}
-
-					for _, u := range urls {
-						reqURL := fmt.Sprintf("http://localhost:%s%s", gatewayURL.Port(), u)
-						for i := 0; i < times; i++ {
-							loadTime, err := runPhantomas(groupCtx, node)
-							if err != nil {
-								return fmt.Errorf("running phantomas: %w", err)
-							}
-
-							fmt.Printf("node: %d\turl: %s\treq: %d\tversion: %s\tlatency (ms): %s\n", nodeNum, reqURL, i, node.MustVersion(), loadTime)
-
-							m.Lock()
-							if results[nodeNum] == nil {
-								results[nodeNum] = map[string][]int64{}
-							}
-							results[nodeNum][u] = append(results[nodeNum][u], loadTime.Milliseconds())
-							m.Unlock()
-
-							gcCtx, cancelGC := context.WithTimeout(groupCtx, 10*time.Second)
-							err = kubo.ProcMust(node.Context(gcCtx).RunKubo(cluster.StartProcRequest{
-								Args: []string{"repo", "gc"},
-							}))
-							if err != nil {
-								cancelGC()
-								return fmt.Errorf("node %d running gc: %w", nodeNum, err)
-							}
-							cancelGC()
-						}
-					}
-					return nil
-				})
-			}
-			err = group.Wait()
-			if err != nil {
-				log.Fatalf("running test: %s", err)
-			}
-
-			for nodeNum := 0; nodeNum < len(nodes); nodeNum++ {
-				version := nodeVersions[nodeNum]
-				for _, url := range urls {
-					times := results[nodeNum][url]
-					for _, t := range times {
-						fmt.Printf("region=%s\tversion=%s\turl=%s\tnode=%d\tms=%d\n", region, version, url, nodeNum, t)
-						_, err = db.ExecContext(ctx, "INSERT INTO website_measurements (region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, NOW())", region, url, version, nodeNum, float64(t)/1000.0)
-						if err != nil {
-							fmt.Println("err inserting row:", err)
-						}
-					}
-				}
-			}
-
-			return nil
+			return errg.Wait()
 		},
 	}
 	err := app.Run(os.Args)
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runRegion(cliCtx *cli.Context, db *sql.DB, clus cluster.Cluster, logger *zap.SugaredLogger, region string) error {
+	ctx := cliCtx.Context
+
+	versions := cliCtx.StringSlice("versions")
+	nodesPerVersion := cliCtx.Int("nodes-per-version")
+	urls := cliCtx.StringSlice("urls")
+	times := cliCtx.Int("times")
+	settle := cliCtx.Duration("settle")
+	c := kubo.New(basic.New(clus).WithLogger(logger))
+	defer c.Cleanup()
+
+	log.Printf("Launching %d nodes in %s", len(versions)*nodesPerVersion, region)
+	nodes := c.MustNewNodes(len(versions) * nodesPerVersion)
+	var nodeVersions []string
+	for i, v := range versions {
+		for j := 0; j < nodesPerVersion; j++ {
+			node := nodes[i*nodesPerVersion+j]
+			node.WithKuboVersion(v)
+			nodeVersions = append(nodeVersions, v)
+		}
+	}
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, node := range nodes {
+		node := node
+		group.Go(func() error {
+			node = node.Context(groupCtx)
+			err := node.LoadBinary()
+			if err != nil {
+				return fmt.Errorf("loading binary: %w", err)
+			}
+			err = node.Init()
+			if err != nil {
+				return fmt.Errorf("initializing kubo: %w", err)
+			}
+			err = node.ConfigureForRemote()
+			if err != nil {
+				return fmt.Errorf("configuring kubo: %w", err)
+			}
+			_, err = node.Context(ctx).StartDaemonAndWaitForAPI()
+			if err != nil {
+				return fmt.Errorf("waiting for kubo to startup: %w", err)
+			}
+			return nil
+		})
+	}
+
+	log.Printf("Setting up nodes")
+	err := group.Wait()
+	if err != nil {
+		return fmt.Errorf("waiting on nodes to setup: %w", err)
+	}
+
+	log.Printf("Daemons running, waiting to settle...\n")
+	time.Sleep(settle)
+
+	var m sync.Mutex
+	// map from node to url to list of latencies in attempt order
+	results := map[int]map[string][]int64{}
+
+	group, groupCtx = errgroup.WithContext(ctx)
+	for i, node := range nodes {
+		node := node
+		nodeNum := i
+		group.Go(func() error {
+			node = node.Context(groupCtx)
+			gatewayURL, err := node.GatewayURL()
+			if err != nil {
+				return fmt.Errorf("node %s getting gateway URL: %w", node.Node.Node, err)
+			}
+
+			for _, u := range urls {
+				reqURL := fmt.Sprintf("http://localhost:%s%s", gatewayURL.Port(), u)
+				for i := 0; i < times; i++ {
+					loadTime, err := runPhantomas(groupCtx, node)
+					if err != nil {
+						return fmt.Errorf("running phantomas: %w", err)
+					}
+
+					fmt.Printf("region: %s\tnode: %d\turl: %s\treq: %d\tversion: %s\tlatency (ms): %s\n", region, nodeNum, reqURL, i, node.MustVersion(), loadTime)
+
+					m.Lock()
+					if results[nodeNum] == nil {
+						results[nodeNum] = map[string][]int64{}
+					}
+					results[nodeNum][u] = append(results[nodeNum][u], loadTime.Milliseconds())
+					m.Unlock()
+
+					gcCtx, cancelGC := context.WithTimeout(groupCtx, 10*time.Second)
+					err = kubo.ProcMust(node.Context(gcCtx).RunKubo(cluster.StartProcRequest{
+						Args: []string{"repo", "gc"},
+					}))
+					if err != nil {
+						cancelGC()
+						return fmt.Errorf("%s node %d running gc: %w", region, nodeNum, err)
+					}
+					cancelGC()
+				}
+			}
+			return nil
+		})
+	}
+
+	if err = group.Wait(); err != nil {
+		return fmt.Errorf("running %s test: %w", region, err)
+	}
+
+	for nodeNum := 0; nodeNum < len(nodes); nodeNum++ {
+		version := nodeVersions[nodeNum]
+		for _, url := range urls {
+			times := results[nodeNum][url]
+			for _, t := range times {
+				fmt.Printf("region=%s\tversion=%s\turl=%s\tnode=%d\tms=%d\n", region, version, url, nodeNum, t)
+				_, err = db.ExecContext(ctx, "INSERT INTO website_measurements (region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, NOW())", region, url, version, nodeNum, float64(t)/1000.0)
+				if err != nil {
+					fmt.Println("err inserting row:", err)
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 type phantomasOutput struct {
