@@ -14,11 +14,11 @@ RUN GOARCH=amd64 GOOS=linux go build -o latency github.com/guseggert/clustertest
 # Create lightweight container
 FROM alpine:latest
 
-RUN adduser -D -H clustertest
-WORKDIR /home/clustertest
-USER clustertest
+RUN adduser -D -H tiros
+WORKDIR /home/tiros
+USER tiros
 
 COPY --from=builder /build/latency /usr/local/bin/latency
-COPY --from=builder /go/bin/linux_amd64/agent /home/clustertest/nodeagent
+COPY --from=builder /go/bin/linux_amd64/agent /home/tiros/nodeagent
 
 CMD latency
