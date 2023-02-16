@@ -165,10 +165,10 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("error parsing s3 bucket arn: %w", err)
 				}
-
+				r := region
 				clusterImpl := aws.NewCluster().
 					WithNodeAgentBin(nodeagent).
-					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &region}))).
+					WithSession(session.Must(session.NewSession(&awssdk.Config{Region: &r}))).
 					WithLogger(logger).
 					WithPublicSubnetID(subnetIDs[idx]).
 					WithInstanceProfileARN(iparn).
