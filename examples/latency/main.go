@@ -271,9 +271,10 @@ func runRegion(cliCtx *cli.Context, db *sql.DB, clus cluster.Cluster, logger *za
 			for _, u := range urls {
 				reqURL := fmt.Sprintf("http://localhost:%s%s", gatewayURL.Port(), u)
 				for i := 0; i < times; i++ {
-					loadTime, err := runPhantomas(groupCtx, node)
+					loadTime, err := runPhantomas(groupCtx, node, u)
 					if err != nil {
-						return fmt.Errorf("running phantomas: %w", err)
+						log.Printf("error running phantomas: %s", err)
+						continue
 					}
 
 					fmt.Printf("region: %s\tnode: %d\turl: %s\treq: %d\tversion: %s\tlatency (ms): %s\n", region, nodeNum, reqURL, i, node.MustVersion(), loadTime)
@@ -327,7 +328,7 @@ type phantomasOutput struct {
 	}
 }
 
-func runPhantomas(ctx context.Context, node *kubo.Node) (*time.Duration, error) {
+func runPhantomas(ctx context.Context, node *kubo.Node, url string) (*time.Duration, error) {
 	ctx, cancelCurl := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancelCurl()
 
@@ -357,7 +358,7 @@ func runPhantomas(ctx context.Context, node *kubo.Node) (*time.Duration, error) 
 			"macbre/phantomas:latest",
 			"/opt/phantomas/bin/phantomas.js",
 			"--timeout=60",
-			fmt.Sprintf("--url=%s/ipns/protocol.ai", gatewayURL),
+			fmt.Sprintf("--url=%s%s", gatewayURL, url),
 		},
 		Stdout: stdout,
 		Stderr: stderr,
