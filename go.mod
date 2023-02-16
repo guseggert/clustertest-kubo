@@ -111,4 +111,4 @@ require (
 	nhooyr.io/websocket v1.8.7 // indirect
 )
 
-replace github.com/guseggert/clustertest v0.0.0-20230208164507-f5fc1ff66427 => github.com/dennis-tra/clustertest v0.0.0-20230214171044-d2f0c8716aa4
+replace github.com/guseggert/clustertest v0.0.0-20230208164507-f5fc1ff66427 => github.com/dennis-tra/clustertest v0.0.0-20230216074629-ad6bc680a355
