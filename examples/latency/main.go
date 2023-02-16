@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"log"
 	"os"
 	"strings"
@@ -135,6 +136,7 @@ func main() {
 			instanceProfileARNs := cliCtx.StringSlice("instance-profile-arns")
 			instanceSecurityGroupIDs := cliCtx.StringSlice("instance-security-group-ids")
 			s3BucketARNs := cliCtx.StringSlice("s3-bucket-arns")
+			runID := uuid.NewString()
 
 			var l *zap.Logger
 			var err error
@@ -184,7 +186,7 @@ func main() {
 				ci := clusterImpl
 				region := regions[i]
 				errg.Go(func() error {
-					return runRegion(cliCtx, db, ci, logger, region)
+					return runRegion(cliCtx, db, runID, ci, logger, region)
 				})
 			}
 
@@ -197,7 +199,7 @@ func main() {
 	}
 }
 
-func runRegion(cliCtx *cli.Context, db *sql.DB, clus cluster.Cluster, logger *zap.SugaredLogger, region string) error {
+func runRegion(cliCtx *cli.Context, db *sql.DB, runID string, clus cluster.Cluster, logger *zap.SugaredLogger, region string) error {
 	ctx := cliCtx.Context
 
 	versions := cliCtx.StringSlice("versions")
@@ -311,7 +313,7 @@ func runRegion(cliCtx *cli.Context, db *sql.DB, clus cluster.Cluster, logger *za
 			times := results[nodeNum][url]
 			for _, t := range times {
 				fmt.Printf("region=%s\tversion=%s\turl=%s\tnode=%d\tms=%d\n", region, version, url, nodeNum, t)
-				_, err = db.ExecContext(ctx, "INSERT INTO website_measurements (region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, NOW())", region, url, version, nodeNum, float64(t)/1000.0)
+				_, err = db.ExecContext(ctx, "INSERT INTO measurements (run_id, region, url, version, node_num, latency, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())", runID, region, url, version, nodeNum, float64(t)/1000.0)
 				if err != nil {
 					fmt.Println("err inserting row:", err)
 				}
