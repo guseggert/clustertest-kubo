@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -31,15 +32,18 @@ import (
 type Node struct {
 	*basic.Node
 
-	Ctx        context.Context
-	Log        *zap.SugaredLogger
-	HTTPClient *http.Client
-	BinLoader  bin.Loader
+	Ctx                   context.Context
+	Log                   *zap.SugaredLogger
+	HTTPClient            *http.Client
+	BinLoader             bin.Loader
+	APIAvailableSince     time.Time
+	GatewayAvailableSince time.Time
 
 	// cached data
 	apiAddr       multiaddr.Multiaddr
 	rpcAPIClient  *shell.Shell
 	rcpHTTPClient *httpapi.HttpApi
+	gatewayAddr   *url.URL
 }
 
 func (n *Node) WithNodeLogger(l *zap.SugaredLogger) *Node {
@@ -383,16 +387,24 @@ func (n *Node) RemoteAddrInfo() (*peer.AddrInfo, error) {
 }
 
 func (n *Node) GatewayURL() (*url.URL, error) {
+	if n.gatewayAddr != nil {
+		return n.gatewayAddr, nil
+	}
 	rc, err := n.ReadFile(filepath.Join(n.IPFSPath(), "gateway"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opening gateway file: %w", err)
 	}
 	defer rc.Close()
 	b, err := io.ReadAll(rc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading gateway file: %w", err)
 	}
-	return url.Parse(strings.TrimSpace(string(b)))
+	u, err := url.Parse(strings.TrimSpace(string(b)))
+	if err != nil {
+		return nil, fmt.Errorf("parsing gateway url: %w", err)
+	}
+	n.gatewayAddr = u
+	return u, nil
 }
 
 func (n *Node) WaitOnAPI() error {
@@ -400,12 +412,31 @@ func (n *Node) WaitOnAPI() error {
 	for i := 0; i < 500; i++ {
 		if n.checkAPI() {
 			n.Log.Debugf("daemon API found")
+			n.APIAvailableSince = time.Now()
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	n.Log.Debug("node %s failed to come online", n)
 	return errors.New("timed out waiting on API")
+}
+
+func (n *Node) checkGateway() bool {
+	u, err := n.GatewayURL()
+	if err != nil {
+		n.Log.Debugf("Gateway not ready: %s", err.Error())
+		return false
+	}
+
+	c, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		n.Log.Debugf("could not connect to gateway: %s", err.Error())
+		return false
+	}
+
+	_ = c.Close()
+
+	return true
 }
 
 func (n *Node) checkAPI() bool {
@@ -447,6 +478,20 @@ func (n *Node) checkAPI() bool {
 	}
 	n.Log.Debug("API check successful")
 	return true
+}
+
+func (n *Node) WaitOnGateway() error {
+	n.Log.Debug("waiting on gateway")
+	for i := 0; i < 500; i++ {
+		if n.checkGateway() {
+			n.Log.Debugf("daemon gateway found")
+			n.GatewayAvailableSince = time.Now()
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	n.Log.Debug("node %s failed to come online", n)
+	return errors.New("timed out waiting on gateway")
 }
 
 func (n *Node) WaitOnRefreshedRoutingTable() error {
